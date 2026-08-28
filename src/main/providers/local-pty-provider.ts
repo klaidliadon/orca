@@ -63,6 +63,12 @@ import {
   resolveAgentForegroundProcessWithAvailability
 } from './agent-foreground-process'
 import { resolveStableForegroundProcess } from './stable-foreground-process'
+import {
+  classifyLocalPtyChildProcesses,
+  readLocalPtyTitle,
+  type LocalForegroundObservation
+} from './local-pty-process-evidence'
+import type { PtyProcessInspection } from './pty-process-inspection'
 import { getAgentForegroundContextPaths } from './agent-foreground-context-paths'
 import { recognizeAgentProcessFromCommandLine } from '../../shared/agent-process-recognition'
 import { killWithDescendantSweep } from '../pty-descendant-termination'
@@ -1306,10 +1312,19 @@ export class LocalPtyProvider implements IPtyProvider {
   }
 
   async getForegroundProcess(id: string): Promise<string | null> {
+    return (await this.observeForegroundProcess(id)).processName
+  }
+
+  /** The foreground read plus the evidence verdict behind it. `processName`
+   *  keeps the exact legacy collapse every existing caller sees; only
+   *  inspectProcess publishes the evidence. */
+  private async observeForegroundProcess(id: string): Promise<LocalForegroundObservation> {
     const proc = ptyProcesses.get(id)
     if (!proc) {
       ptyLastRecognizedForeground.delete(id)
-      return null
+      // The provider owns this table; a missing entry is a reaped PTY, not a
+      // failed probe.
+      return { processName: null, evidence: { verdict: 'observed', processName: null } }
     }
     const fallbackProcess = resolveForegroundFallbackProcess(
       proc.process || null,
@@ -1330,7 +1345,10 @@ export class LocalPtyProvider implements IPtyProvider {
       try {
         const paneProcessIds = readWindowsPtyJobProcessIds(proc)
         if (ptyProcesses.get(id) !== proc) {
-          return null
+          return {
+            processName: null,
+            evidence: { verdict: 'unverifiable', reason: 'pty replaced during inspection' }
+          }
         }
         const verdict = judgeCachedAgentJobEvidence({
           jobProcessIds: paneProcessIds,
@@ -1340,7 +1358,12 @@ export class LocalPtyProvider implements IPtyProvider {
           identityAgeMs: Date.now() - (cachedEntry?.at ?? 0)
         })
         if (verdict === 'confirmed' || verdict === 'unproven') {
-          return cachedAgent
+          // Both rest on a successful, complete job read that saw a live
+          // member: a positive observation, unlike the degraded reads below.
+          return {
+            processName: cachedAgent,
+            evidence: { verdict: 'observed', processName: cachedAgent }
+          }
         }
         if (verdict === 'exited') {
           // The shell stands alone in a complete, inescapable job list: no
@@ -1372,7 +1395,10 @@ export class LocalPtyProvider implements IPtyProvider {
       )
       // Why: the scan can outlive PTY teardown/id reuse; stale results must not resurrect cache for a foreign id.
       if (ptyProcesses.get(id) !== proc) {
-        return null
+        return {
+          processName: null,
+          evidence: { verdict: 'unverifiable', reason: 'pty replaced during inspection' }
+        }
       }
       // Why: a degraded scan reporting shell-as-foreground fires a false "agent done"; keep last recognized agent instead.
       const lastRecognizedAgent = ptyLastRecognizedForeground.get(id)?.name ?? null
@@ -1411,13 +1437,35 @@ export class LocalPtyProvider implements IPtyProvider {
       } else if (!stable.lastRecognizedAgent) {
         ptyLastRecognizedForeground.delete(id)
       }
-      return stable.processName
+      if (!stableResolution.available) {
+        // Legacy callers still get the stable-cache fallback; the evidence
+        // says "could not ask" so a degraded read is never exit evidence.
+        return {
+          processName: stable.processName,
+          evidence: {
+            verdict: 'unverifiable',
+            reason: paneMembershipUnavailable
+              ? 'pane membership read unavailable'
+              : 'process table scan degraded'
+          }
+        }
+      }
+      return {
+        processName: stable.processName,
+        evidence: { verdict: 'observed', processName: stable.processName }
+      }
     } catch {
       if (ptyProcesses.get(id) !== proc) {
-        return null
+        return {
+          processName: null,
+          evidence: { verdict: 'unverifiable', reason: 'pty replaced during inspection' }
+        }
       }
       // Why: an inspection error is a degraded read; fall back to last recognized agent (null reads as an exit).
-      return ptyLastRecognizedForeground.get(id)?.name ?? null
+      return {
+        processName: ptyLastRecognizedForeground.get(id)?.name ?? null,
+        evidence: { verdict: 'unverifiable', reason: 'foreground inspection threw' }
+      }
     }
   }
 
@@ -1465,6 +1513,24 @@ export class LocalPtyProvider implements IPtyProvider {
         : {}
     )
     return ptyProcesses.get(id) === proc && confirmed
+  }
+
+  async inspectProcess(id: string): Promise<PtyProcessInspection> {
+    const foreground = await this.observeForegroundProcess(id)
+    const proc = ptyProcesses.get(id)
+    const children = classifyLocalPtyChildProcesses({
+      procPresent: proc !== undefined,
+      titleRead: readLocalPtyTitle(proc),
+      shell: ptyShellName.get(id),
+      foreground: foreground.evidence
+    })
+    // Legacy fields keep the exact pre-evidence collapse; only the optional
+    // evidence distinguishes "observed idle" from "could not ask".
+    return {
+      foregroundProcess: foreground.processName,
+      hasChildProcesses: children.hasChildProcesses,
+      processEvidence: { foreground: foreground.evidence, children: children.evidence }
+    }
   }
 
   async serialize(_ids: string[]): Promise<string> {
