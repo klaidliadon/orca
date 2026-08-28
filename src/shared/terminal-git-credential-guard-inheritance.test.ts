@@ -68,6 +68,35 @@ describe('guard env inherited by a terminal the guard declines to guard', () => 
     expect(env.GIT_CONFIG_VALUE_1).toBeUndefined()
   })
 
+  it('keeps indexed config entries appended after the guard, identical-looking or not', () => {
+    const parent = guardedParentEnv('linux', {
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'http.proxy',
+      GIT_CONFIG_VALUE_0: 'http://proxy.invalid'
+    })
+    expect(parent.GIT_CONFIG_COUNT).toBe('3')
+    // Hardening the user appended inside the guarded pane, after Orca's own pair.
+    Object.assign(parent, {
+      GIT_CONFIG_KEY_3: 'credential.interactive',
+      GIT_CONFIG_VALUE_3: 'false',
+      GIT_CONFIG_KEY_4: 'credential.guiPrompt',
+      GIT_CONFIG_VALUE_4: 'false',
+      GIT_CONFIG_COUNT: '5'
+    })
+
+    const { env } = spawnChild(parent, { launchCommand: '/bin/zsh', platform: 'linux' })
+
+    expect(env.GIT_CONFIG_COUNT).toBe('3')
+    expect(env.GIT_CONFIG_KEY_0).toBe('http.proxy')
+    expect(env.GIT_CONFIG_VALUE_0).toBe('http://proxy.invalid')
+    expect(env.GIT_CONFIG_KEY_1).toBe('credential.interactive')
+    expect(env.GIT_CONFIG_VALUE_1).toBe('false')
+    expect(env.GIT_CONFIG_KEY_2).toBe('credential.guiPrompt')
+    expect(env.GIT_CONFIG_VALUE_2).toBe('false')
+    expect(env.GIT_CONFIG_KEY_3).toBeUndefined()
+    expect(env.GIT_CONFIG_VALUE_3).toBeUndefined()
+  })
+
   it('restores the user values the guard overwrote', () => {
     const parent = guardedParentEnv('linux', {
       GIT_TERMINAL_PROMPT: '1',

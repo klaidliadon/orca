@@ -1,4 +1,7 @@
-import { readValidGitConfigEnvCount } from './git-credential-prompt-env'
+import {
+  GIT_CREDENTIAL_GUARD_CONFIG_ENTRIES,
+  readValidGitConfigEnvCount
+} from './git-credential-prompt-env'
 import { addWslEnvKeys } from './wsl-env'
 
 /**
@@ -9,7 +12,8 @@ import { addWslEnvKeys } from './wsl-env'
 export const TERMINAL_GIT_CREDENTIAL_GUARD_RESTORE_ENV =
   'ORCA_INTERNAL_TERMINAL_GIT_CREDENTIAL_GUARD_RESTORE'
 
-const GUARD_CONFIG_KEYS = new Set(['credential.interactive', 'credential.guiPrompt'])
+const GUARD_CONFIG_VALUES = new Map<string, string>(GIT_CREDENTIAL_GUARD_CONFIG_ENTRIES)
+const GUARD_CONFIG_SLOT_COUNT = GIT_CREDENTIAL_GUARD_CONFIG_ENTRIES.length
 const GIT_CONFIG_PROTOCOL_KEY_RE = /^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/
 const GIT_CONFIG_INDEXED_KEY_RE = /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/
 const SCALAR_KEYS = [
@@ -137,7 +141,10 @@ function restoreIndexedConfig(env: Record<string, string>, state: RestoreState):
   for (let index = 0; index < count; index++) {
     const key = env[`GIT_CONFIG_KEY_${index}`] as string
     const value = env[`GIT_CONFIG_VALUE_${index}`] as string
-    if (index >= base && GUARD_CONFIG_KEYS.has(key) && value === 'false') {
+    // Why: only the slots the guard appended; an identical-looking entry past them
+    // was added inside the guarded pane and is the caller's to keep.
+    const isGuardSlot = index >= base && index < base + GUARD_CONFIG_SLOT_COUNT
+    if (isGuardSlot && GUARD_CONFIG_VALUES.get(key) === value) {
       continue
     }
     kept.push([key, value])

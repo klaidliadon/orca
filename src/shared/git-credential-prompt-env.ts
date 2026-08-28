@@ -79,6 +79,17 @@ export function appendGitConfigEnv(
 }
 
 /**
+ * The indexed config the guard appends, in append order. Provenance reads it to
+ * bound removal to the slots the guard itself owns.
+ */
+// Why: keep the helper so cached credentials continue to work; disable
+// only its interactive fallback.
+export const GIT_CREDENTIAL_GUARD_CONFIG_ENTRIES = [
+  ['credential.interactive', 'false'],
+  ['credential.guiPrompt', 'false']
+] as const satisfies readonly (readonly [key: string, value: string])[]
+
+/**
  * Disable interactive Git credential UI while preserving cached credentials
  * and caller-provided askpass programs.
  */
@@ -95,12 +106,7 @@ export function gitCredentialPromptGuardEnv(
       // Why: GCM can ignore terminal/askpass guards and open its own GUI.
       GCM_INTERACTIVE: 'never'
     },
-    // Why: keep the helper so cached credentials continue to work; disable
-    // only its interactive fallback.
-    [
-      ['credential.interactive', 'false'],
-      ['credential.guiPrompt', 'false']
-    ]
+    GIT_CREDENTIAL_GUARD_CONFIG_ENTRIES
   )
   if (platform === 'win32') {
     // Why: wsl.exe imports only variables registered in WSLENV. Indexed Git
