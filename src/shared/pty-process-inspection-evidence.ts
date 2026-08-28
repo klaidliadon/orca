@@ -78,14 +78,24 @@ export function readPtyProcessInspectionEvidence(result: {
   }
 }
 
+// Field types are validated, not just verdicts: a foreign host can put any
+// JSON in these slots, and an out-of-type payload must degrade to
+// `unverifiable` — never ride an `observed` verdict into the exit gate.
+function normalizeReason(reason: unknown): string {
+  return typeof reason === 'string' ? reason : 'unspecified'
+}
+
 function normalizeForegroundEvidence(
   evidence: PtyForegroundProcessEvidence | undefined
 ): PtyForegroundProcessEvidence {
   if (evidence?.verdict === 'observed') {
-    return { verdict: 'observed', processName: evidence.processName ?? null }
+    const processName = evidence.processName ?? null
+    if (processName === null || typeof processName === 'string') {
+      return { verdict: 'observed', processName }
+    }
   }
   if (evidence?.verdict === 'unverifiable') {
-    return { verdict: 'unverifiable', reason: evidence.reason ?? 'unspecified' }
+    return { verdict: 'unverifiable', reason: normalizeReason(evidence.reason) }
   }
   return { verdict: 'unverifiable', reason: 'malformed foreground inspection evidence' }
 }
@@ -97,7 +107,7 @@ function normalizeChildrenEvidence(
     return { verdict: evidence.verdict }
   }
   if (evidence?.verdict === 'unverifiable') {
-    return { verdict: 'unverifiable', reason: evidence.reason ?? 'unspecified' }
+    return { verdict: 'unverifiable', reason: normalizeReason(evidence.reason) }
   }
   return { verdict: 'unverifiable', reason: 'malformed child-process inspection evidence' }
 }

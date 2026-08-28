@@ -52,6 +52,37 @@ describe('readPtyProcessInspectionEvidence normalization', () => {
     expect(evidence.children).toEqual({ verdict: 'unverifiable', reason: 'unspecified' })
   })
 
+  it('coerces an observed verdict with a non-string processName to unverifiable', () => {
+    // A number here would flow into recognizeAgentProcess and count toward the
+    // "foreground is not a recognized agent" leg — malformed foreign data must
+    // never feed the positive-exited path.
+    const evidence = readPtyProcessInspectionEvidence({
+      foregroundProcess: null,
+      hasChildProcesses: false,
+      processEvidence: {
+        foreground: { verdict: 'observed', processName: 42 } as never,
+        children: { verdict: 'exited' }
+      }
+    })
+    expect(evidence.foreground).toEqual({
+      verdict: 'unverifiable',
+      reason: 'malformed foreground inspection evidence'
+    })
+  })
+
+  it('replaces a non-string unverifiable reason instead of forwarding it', () => {
+    const evidence = readPtyProcessInspectionEvidence({
+      foregroundProcess: null,
+      hasChildProcesses: false,
+      processEvidence: {
+        foreground: { verdict: 'unverifiable', reason: 42 } as never,
+        children: { verdict: 'unverifiable', reason: { deep: true } } as never
+      }
+    })
+    expect(evidence.foreground).toEqual({ verdict: 'unverifiable', reason: 'unspecified' })
+    expect(evidence.children).toEqual({ verdict: 'unverifiable', reason: 'unspecified' })
+  })
+
   it('synthesizes the legacy reading when the host predates evidence', () => {
     expect(
       readPtyProcessInspectionEvidence({ foregroundProcess: 'codex', hasChildProcesses: true })
