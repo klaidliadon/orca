@@ -270,6 +270,16 @@ describe('resolveSftpTransferPath', () => {
       expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('READDIR failed'))
     })
 
+    it('keeps the shell path when the session has no readdir', async () => {
+      const { sftp } = makeSftp({ startPath: '/' })
+      Reflect.deleteProperty(sftp, 'readdir')
+
+      const resolved = await resolveSftpTransferPath(sftp, `${SHELL_HOME}/${RELAY_DIR}`, mapping)
+
+      expect(resolved).toBe(`${SHELL_HOME}/${RELAY_DIR}`)
+      expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('READDIR failed'))
+    })
+
     it('keeps the shell path when no reachable namespace carries the marker', async () => {
       const { sftp, readdirCalls } = makeSftp({
         startPath: '/',

@@ -137,9 +137,13 @@ function readdirSftp(
   remotePath: string
 ): Promise<FileEntryWithStats[] | undefined> {
   return new Promise((resolve) => {
-    sftp.readdir(remotePath, (err, entries) => {
-      resolve(err ? undefined : entries)
-    })
+    try {
+      sftp.readdir(remotePath, (err, entries) => {
+        resolve(err ? undefined : entries)
+      })
+    } catch {
+      resolve(undefined)
+    }
   })
 }
 
