@@ -75,7 +75,14 @@ vi.mock('../providers/windows-pty-job-membership', () => ({
 }))
 
 import { createPtySubprocess } from './pty-subprocess'
-import { TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV } from '../../shared/terminal-git-credential-guard'
+import {
+  restoreGitCredentialGuardEnv,
+  takeGitCredentialGuardEnv
+} from '../../shared/git-credential-guard-env-test-harness'
+import {
+  applyTerminalGitCredentialPromptGuard,
+  TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV
+} from '../../shared/terminal-git-credential-guard'
 import { mockPtyProcess, useDaemonPtySubprocessEnv } from './pty-subprocess-test-harness'
 
 describe('createPtySubprocess', () => {
@@ -221,5 +228,84 @@ describe('createPtySubprocess', () => {
     expect(spawnEnv.GCM_INTERACTIVE).toBe('never')
     expect(Object.values(spawnEnv)).toContain('credential.interactive')
     expect(Object.values(spawnEnv)).toContain('credential.guiPrompt')
+  })
+  it('strips a guard the daemon inherited when the pane must not be guarded', async () => {
+    const proc = mockPtyProcess()
+    spawnMock.mockReturnValue(proc)
+    // A daemon forked from a guarded agent pane: build its inherited env with the
+    // real guard so the double carries every variable the guard actually sets.
+    const inherited: Record<string, string> = {
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.quotePath',
+      GIT_CONFIG_VALUE_0: 'false'
+    }
+    applyTerminalGitCredentialPromptGuard(inherited, {
+      launchCommand: 'claude',
+      platform: process.platform
+    })
+    const saved = takeGitCredentialGuardEnv(inherited)
+
+    try {
+      await createPtySubprocess({
+        sessionId: 'inherited-guard-unguarded-pane',
+        cols: 80,
+        rows: 24,
+        env: { SHELL: '/bin/bash' }
+      })
+
+      const spawnEnv = spawnMock.mock.calls.at(-1)?.[2]?.env as Record<string, string>
+      expect(spawnEnv.GIT_TERMINAL_PROMPT).toBeUndefined()
+      expect(spawnEnv.GCM_INTERACTIVE).toBeUndefined()
+      expect(spawnEnv.GIT_ASKPASS).toBeUndefined()
+      expect(spawnEnv.SSH_ASKPASS).toBeUndefined()
+      // The caller's own entry survives; only Orca's appended pair is removed.
+      expect(spawnEnv.GIT_CONFIG_COUNT).toBe('1')
+      expect(spawnEnv.GIT_CONFIG_KEY_0).toBe('core.quotePath')
+      expect(spawnEnv.GIT_CONFIG_VALUE_0).toBe('false')
+      expect(spawnEnv.GIT_CONFIG_KEY_1).toBeUndefined()
+      expect(Object.values(spawnEnv)).not.toContain('credential.interactive')
+      expect(Object.values(spawnEnv)).not.toContain('credential.guiPrompt')
+    } finally {
+      restoreGitCredentialGuardEnv(saved)
+    }
+  })
+
+  it('gives a guarded daemon pane what its children need to undo the guard', async () => {
+    const proc = mockPtyProcess()
+    spawnMock.mockReturnValue(proc)
+    const saved = takeGitCredentialGuardEnv({
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.quotePath',
+      GIT_CONFIG_VALUE_0: 'false'
+    })
+
+    try {
+      await createPtySubprocess({
+        sessionId: 'guarded-daemon-pane-provenance',
+        cols: 80,
+        rows: 24,
+        env: { SHELL: '/bin/bash', [TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV]: 'guard' }
+      })
+
+      const paneEnv = spawnMock.mock.calls.at(-1)?.[2]?.env as Record<string, string>
+      expect(paneEnv.GIT_TERMINAL_PROMPT).toBe('0')
+      expect(paneEnv.GIT_CONFIG_COUNT).toBe('3')
+
+      // A plain shell launched from inside that guarded pane.
+      const child = { ...paneEnv }
+      expect(
+        applyTerminalGitCredentialPromptGuard(child, {
+          launchCommand: '/bin/zsh',
+          platform: process.platform
+        })
+      ).toBe(false)
+      expect(child.GIT_TERMINAL_PROMPT).toBeUndefined()
+      expect(child.GCM_INTERACTIVE).toBeUndefined()
+      expect(child.GIT_CONFIG_COUNT).toBe('1')
+      expect(child.GIT_CONFIG_KEY_0).toBe('core.quotePath')
+      expect(child.GIT_CONFIG_KEY_1).toBeUndefined()
+    } finally {
+      restoreGitCredentialGuardEnv(saved)
+    }
   })
 })

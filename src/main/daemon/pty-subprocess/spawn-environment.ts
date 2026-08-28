@@ -11,6 +11,11 @@ import {
   gitCredentialPromptGuardEnv,
   mergeGitConfigEnvProtocol
 } from '../../../shared/git-credential-prompt-env'
+import {
+  captureGitCredentialGuardPreGuardState,
+  recordGitCredentialGuardProvenance,
+  restoreUnguardedGitCredentialEnv
+} from '../../../shared/git-credential-guard-provenance'
 import { TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV } from '../../../shared/terminal-git-credential-guard'
 import {
   expandWindowsEnvironmentVariables,
@@ -34,11 +39,19 @@ function composeGuardedDaemonGitConfigEnv(
 ): void {
   const policy = explicitEnv?.[TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV]
   delete env[TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV]
+  // Why: the daemon forks from Electron and can be launched from a guarded pane, so
+  // its inherited env may already carry the guard; undo it before deciding afresh.
+  restoreUnguardedGitCredentialEnv(env)
   if (policy !== 'guard' && launchAgent === undefined) {
     return
   }
   // Why: the daemon can outlive Electron, so its process.env is the authoritative inherited config; append only the guard.
+  const preGuard = captureGitCredentialGuardPreGuardState(env)
   Object.assign(env, gitCredentialPromptGuardEnv(env, process.platform))
+  recordGitCredentialGuardProvenance(env, preGuard, {
+    appendedConfig: true,
+    forwardToWsl: process.platform === 'win32'
+  })
 }
 
 function deleteRequestedDaemonEnvKeys(
