@@ -85,10 +85,11 @@ export function createAgentCompletionProcessMonitor({
       }
     }
     if (
-      evidence.foreground.verdict === 'unverifiable' ||
-      evidence.children.verdict === 'unverifiable'
+      evidence.foreground.verdict !== 'observed' ||
+      (evidence.children.verdict !== 'live' && evidence.children.verdict !== 'exited')
     ) {
-      // The host could not ask; that is never exit evidence. Re-arm the
+      // The host could not ask, or answered outside this client's verdict
+      // vocabulary (a newer host's arm); neither is exit evidence. Re-arm the
       // two-sample confirmation like any other failed inspection.
       state.pendingProcessExitAgent = null
       state.consecutiveInspectionErrors += 1
@@ -101,7 +102,9 @@ export function createAgentCompletionProcessMonitor({
       return false
     }
     if (state.lastForegroundAgent && state.hasAgentRunEvidence) {
-      if (evidence.children.verdict === 'live') {
+      // Completion requires the positively matched 'exited' arm — "not live"
+      // is not exit evidence (the #16900/#16908 polarity rule).
+      if (evidence.children.verdict !== 'exited') {
         state.pendingProcessExitAgent = null
         scheduleNextPoll()
         return false
