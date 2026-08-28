@@ -1461,7 +1461,8 @@ export class LocalPtyProvider implements IPtyProvider {
           evidence: { verdict: 'unverifiable', reason: 'pty replaced during inspection' }
         }
       }
-      // Why: an inspection error is a degraded read; fall back to last recognized agent (null reads as an exit).
+      // Why: an inspection error is a degraded read; the legacy name keeps the
+      // stable-cache fallback, the evidence keeps it from reading as an exit.
       return {
         processName: ptyLastRecognizedForeground.get(id)?.name ?? null,
         evidence: { verdict: 'unverifiable', reason: 'foreground inspection threw' }
