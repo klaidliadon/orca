@@ -160,3 +160,83 @@ describe('load state', () => {
     expect(findings[0].code).toBe('unit_inactive')
   })
 })
+
+describe('exec target on disk', () => {
+  // A unit can be well-formed and name an interpreter that no longer exists — what a
+  // version-scoped path becomes one package-manager upgrade later.
+  it('reports a missing interpreter as a warning, not a critical', () => {
+    const findings = auditSupervisorEvidence({
+      execTarget: {
+        status: 'observed',
+        value: {
+          interpreter: '/home/linuxbrew/.linuxbrew/Cellar/node/25.8.0/bin/node',
+          interpreterExists: false,
+          script: '/opt/orcad/orcad.js',
+          scriptExists: true
+        }
+      }
+    })
+    expect(findings[0].code).toBe('exec_target_absent')
+    // It cannot start, but it destroys no running terminals.
+    expect(findings[0].severity).toBe('warning')
+    expect(findings[0].message).toMatch(/203\/EXEC/)
+  })
+
+  it('names the missing script too', () => {
+    const findings = auditSupervisorEvidence({
+      execTarget: {
+        status: 'observed',
+        value: {
+          interpreter: '/usr/bin/node',
+          interpreterExists: true,
+          script: '/opt/orcad/orcad.js',
+          scriptExists: false
+        }
+      }
+    })
+    expect(findings[0].message).toContain('/opt/orcad/orcad.js')
+  })
+
+  it('passes when both resolve', () => {
+    expect(
+      codes({
+        execTarget: {
+          status: 'observed',
+          value: {
+            interpreter: '/usr/bin/node',
+            interpreterExists: true,
+            script: '/opt/orcad/orcad.js',
+            scriptExists: true
+          }
+        }
+      })
+    ).toEqual(['exec_target_present'])
+  })
+})
+
+describe('journal persistence', () => {
+  it('flags a volatile journal for a unit that logs to it', () => {
+    const findings = auditSupervisorEvidence({
+      journal: { status: 'observed', value: { storage: 'volatile', unitUsesJournal: true } }
+    })
+    expect(findings[0].code).toBe('journal_volatile')
+    expect(findings[0].severity).toBe('warning')
+    expect(findings[0].message).toMatch(/reboot/)
+  })
+
+  it('says nothing when the unit does not log to the journal', () => {
+    expect(
+      codes({
+        journal: { status: 'observed', value: { storage: 'volatile', unitUsesJournal: false } }
+      })
+    ).toEqual([])
+  })
+
+  it('says nothing when the journal is persistent', () => {
+    expect(
+      codes({
+        journal: { status: 'observed', value: { storage: 'persistent', unitUsesJournal: true } }
+      })
+    ).toEqual([])
+  })
+})

@@ -23,6 +23,7 @@ import {
   type SupervisorServiceFile
 } from '../../shared/supervisor-service-audit'
 import { gatherSupervisorEvidence } from '../../shared/supervisor-service-probe'
+import { observeExecTarget, observeJournal } from './supervisor-host-observations'
 import type { ProbeTarget } from '../../shared/supervisor-service-probe'
 import {
   ORCAD_LAUNCHD_LABEL,
@@ -35,6 +36,11 @@ import {
   type SupervisorScope
 } from '../../shared/supervisor-service-render'
 import { resolveUserDataPath } from './orcad-app-paths'
+import {
+  resolveRealPath,
+  userScopeUnavailableWarning,
+  versionScopedInterpreterWarning
+} from './supervisor-generation-warnings'
 
 export const PRINT_SERVICE_FLAG = '--print-service'
 export const DOCTOR_FLAG = '--doctor'
@@ -117,15 +123,18 @@ function resolveOrcadEntryPath(): string {
   return resolve(entry)
 }
 
-export function printService(argv: string[]): number {
+export async function printService(argv: string[]): Promise<number> {
   const options = parseServiceCommandArgs(argv)
   const platform = resolveSupervisorPlatform(process.platform)
+  const nodePath = options.nodePath ?? process.execPath
   const config = {
     platform,
     scope: options.scope,
-    nodePath: options.nodePath ?? process.execPath,
+    nodePath,
     orcadPath: resolveOrcadEntryPath(),
-    userDataPath: resolveUserDataPath(),
+    // Resolved through symlinks so `RequiresMountsFor` can reach a real mount unit:
+    // systemd maps that directive textually and never sees through a symlinked ancestor.
+    userDataPath: resolveRealPath(resolveUserDataPath()),
     // Generating as root is normal (sudo, a container); running orcad as root is not, so
     // the account is a flag rather than an inheritance.
     user: options.user ?? userInfo().username,
@@ -134,6 +143,19 @@ export function printService(argv: string[]): number {
   }
   const hint = supervisorInstallHint(config)
   process.stdout.write(renderSupervisorService(config))
+
+  // Why before the install block and unindented: the hint is a copy-paste unit, and a
+  // warning folded into it reads as part of the instructions rather than a caveat on them.
+  const warnings = [
+    versionScopedInterpreterWarning(nodePath),
+    ...(platform === 'systemd' && options.scope === 'user'
+      ? [await userScopeUnavailableWarning()]
+      : [])
+  ].filter((warning): warning is string => warning !== null)
+  if (warnings.length > 0) {
+    process.stderr.write(`\n${warnings.join('\n\n')}\n`)
+  }
+
   // Why stderr: stdout is the file, so it stays pipeable straight into the target path.
   process.stderr.write(
     `\nWrite this to: ${hint.path}\nThen run:\n${hint.commands.map((c) => `  ${c}`).join('\n')}\n`
@@ -249,9 +271,17 @@ export async function collectDoctorFindings(
   // Only probe one definition: with two, every result would be ambiguous about which it
   // described, and the duplicate finding is the story anyway.
   const probing = files.length === 1 && !options.noProbe
+  // Why these two run even under --no-probe: they are a stat and a config read, not a
+  // subprocess, and they stay useful on a host where every live probe is refused.
+  const onDisk =
+    files.length === 1
+      ? { execTarget: observeExecTarget(files[0]), journal: observeJournal(files[0]) }
+      : {}
   const evidence = probing
-    ? await gatherSupervisorEvidence(probeTargetFor(files[0], options))
-    : undefined
+    ? { ...(await gatherSupervisorEvidence(probeTargetFor(files[0], options))), ...onDisk }
+    : files.length === 1
+      ? onDisk
+      : undefined
   const findings = auditSupervisorServices({
     files,
     expectedUserDataPath: resolveUserDataPath(),
@@ -286,7 +316,7 @@ export function isServiceCommand(argv: string[]): boolean {
 
 export async function runServiceCommand(argv: string[]): Promise<number> {
   try {
-    return argv.includes(PRINT_SERVICE_FLAG) ? printService(argv) : await runDoctor(argv)
+    return argv.includes(PRINT_SERVICE_FLAG) ? await printService(argv) : await runDoctor(argv)
   } catch (error) {
     const unsupported = error instanceof SupervisorServiceUnsupportedError
     process.stderr.write(`orcad: ${error instanceof Error ? error.message : String(error)}\n`)

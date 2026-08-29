@@ -26,7 +26,10 @@ export type SupervisorServiceConfig = {
   nodePath: string
   /** Absolute path to `orcad.js`. */
   orcadPath: string
-  /** Resolved at generation time; a unit inherits too little environment to resolve it itself. */
+  /**
+   * Resolved at generation time; a unit inherits too little environment to resolve it
+   * itself. Must be a realpath: `RequiresMountsFor` below cannot see through a symlink.
+   */
   userDataPath: string
   /** Account the service runs as. Never root: orcad would create a root-owned data root. */
   user: string
@@ -97,6 +100,12 @@ function renderSystemd(config: SupervisorServiceConfig): string {
 [Unit]
 Description=Orca headless runtime (orcad)
 After=network-online.target
+# Orders this unit after whatever mount carries the data root. It only works on a
+# fully-resolved path: systemd maps this to a mount unit textually, walking up parent
+# directories, so a symlinked ancestor (DSM's /var/services/homes -> /volume2/homes,
+# created during boot) resolves to the root filesystem and orders against nothing.
+# The caller passes a realpath for exactly this reason.
+RequiresMountsFor=${config.userDataPath}
 
 [Service]
 Type=simple

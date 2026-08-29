@@ -88,3 +88,31 @@ export function readConfiguredEndpoint(
   }
   return { bind: /--bind[\s=]+(\S+)/.exec(command)?.[1] ?? '127.0.0.1', port }
 }
+
+/**
+ * The interpreter and script an installed definition will try to exec.
+ *
+ * Split out from the endpoint read because the caller stats these: a unit can be perfectly
+ * well-formed and name a path that no longer exists, which is what a version-scoped
+ * interpreter becomes one package-manager upgrade later.
+ */
+export function readExecTarget(
+  file: SupervisorServiceFile
+): { interpreter: string; script: string | null } | null {
+  const words =
+    file.platform === 'systemd'
+      ? (readSystemdKey(file.text, 'ExecStart') ?? '').trim().split(/\s+/)
+      : [
+          ...(
+            /<key>\s*ProgramArguments\s*<\/key>\s*<array>([\s\S]*?)<\/array>/i.exec(
+              file.text
+            )?.[1] ?? ''
+          ).matchAll(/<string>([^<]*)<\/string>/g)
+        ].map((match) => match[1])
+  // systemd allows `-`, `@`, `+`, `!` prefixes on ExecStart; strip them off the binary.
+  const interpreter = words[0]?.replace(/^[-@+!:]+/, '') ?? ''
+  if (!interpreter) {
+    return null
+  }
+  return { interpreter, script: words.slice(1).find((word) => !word.startsWith('-')) ?? null }
+}

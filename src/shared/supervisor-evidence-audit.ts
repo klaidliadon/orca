@@ -146,8 +146,69 @@ export function supersededFileFindingCodes(live: readonly SupervisorFinding[]): 
 
 const LINGER_CODES = new Set(['linger_enabled', 'linger_disabled', 'linger_unverified_live'])
 
+/**
+ * A unit can be perfectly well-formed and name an interpreter that no longer exists — a
+ * version-scoped path one package-manager upgrade later. It cannot start, so it is a
+ * warning; it destroys no running terminals, so it is not critical.
+ */
+function auditExecTargetOnDisk(evidence: SupervisorEvidence): SupervisorFinding | null {
+  const probe = evidence.execTarget
+  if (!probe) {
+    return null
+  }
+  if (probe.status !== 'observed') {
+    return unverified('exec_target_unverified', probe, 'Whether ExecStart can be executed')
+  }
+  const { interpreter, interpreterExists, script, scriptExists } = probe.value
+  const missing = [
+    ...(interpreterExists ? [] : [`interpreter ${interpreter}`]),
+    ...(script && !scriptExists ? [`script ${script}`] : [])
+  ]
+  if (missing.length === 0) {
+    return { code: 'exec_target_present', severity: 'ok', message: 'ExecStart resolves on disk.' }
+  }
+  return {
+    code: 'exec_target_absent',
+    severity: 'warning',
+    message: `ExecStart does not exist on disk: ${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} missing, so the service cannot start (203/EXEC).`,
+    remedy: 'Regenerate with orcad --print-service, passing --node with a stable path.'
+  }
+}
+
+/**
+ * The generated unit logs to journald because orcad rotates nothing of its own — sound
+ * reasoning that assumes a persistent, readable journal. Appliance hosts routinely set
+ * `Storage=volatile`, which puts the journal in /run and loses it on reboot.
+ */
+function auditJournalPersistence(evidence: SupervisorEvidence): SupervisorFinding | null {
+  const probe = evidence.journal
+  if (!probe) {
+    return null
+  }
+  if (probe.status !== 'observed') {
+    return unverified('journal_storage_unverified', probe, "journald's storage mode")
+  }
+  const { storage, unitUsesJournal } = probe.value
+  if (!unitUsesJournal || storage !== 'volatile') {
+    return null
+  }
+  return {
+    code: 'journal_volatile',
+    severity: 'warning',
+    message:
+      'The unit logs to the journal, but journald Storage=volatile keeps the journal in ' +
+      '/run, so these logs do not persist across a reboot and are gone exactly when you ' +
+      'would go looking for why the host restarted.',
+    remedy: 'Set Storage=persistent in journald.conf, or point the unit at a file you rotate.'
+  }
+}
+
 export function auditSupervisorEvidence(evidence: SupervisorEvidence): SupervisorFinding[] {
-  return [auditUnitState(evidence), auditLinger(evidence), auditConfiguredPort(evidence)].filter(
-    (finding): finding is SupervisorFinding => finding !== null
-  )
+  return [
+    auditUnitState(evidence),
+    auditLinger(evidence),
+    auditConfiguredPort(evidence),
+    auditExecTargetOnDisk(evidence),
+    auditJournalPersistence(evidence)
+  ].filter((finding): finding is SupervisorFinding => finding !== null)
 }

@@ -149,7 +149,9 @@ describe('duplicates', () => {
     const other = file({
       path: '/home/orca/.config/systemd/user/orcad.service',
       scope: 'user',
-      text: file().text.replace(ROOT, '/srv/other/.orca')
+      // replaceAll: the root appears in both RequiresMountsFor and Environment, and
+      // rewriting only the first leaves the two files still sharing a data root.
+      text: file().text.replaceAll(ROOT, '/srv/other/.orca')
     })
     const findings = audit([file(), other])
     expect(findings.map((f) => f.code)).toContain('multiple_services_distinct_roots')
