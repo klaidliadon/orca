@@ -238,31 +238,46 @@ function probeTargetFor(file: SupervisorServiceFile, options: ServiceCommandOpti
   }
 }
 
-export async function runDoctor(argv: string[]): Promise<number> {
+/** Shared by the text and JSON paths so neither can drift from the other's verdict. */
+export async function collectDoctorFindings(
+  argv: string[]
+): Promise<{ findings: SupervisorFinding[]; code: number }> {
   const platform = resolveSupervisorPlatform(process.platform)
   const options = parseServiceCommandArgs(argv)
   const files = collectServiceFiles(platform, options.servicePath ? [options.servicePath] : [])
-  // Only probe when there is exactly one definition: with two, every probe result would be
-  // ambiguous about which one it described, and the duplicate finding is the story anyway.
-  const evidence =
-    files.length === 1 && !options.noProbe
-      ? await gatherSupervisorEvidence(probeTargetFor(files[0], options))
-      : undefined
+  // Only probe one definition: with two, every result would be ambiguous about which it
+  // described, and the duplicate finding is the story anyway.
+  const probing = files.length === 1 && !options.noProbe
+  const evidence = probing
+    ? await gatherSupervisorEvidence(probeTargetFor(files[0], options))
+    : undefined
   const findings = auditSupervisorServices({
     files,
     expectedUserDataPath: resolveUserDataPath(),
     evidence
   })
-  process.stdout.write(`${formatFindings(findings)}\n`)
-  // Why not non-zero on unverifiable: a check this could not run is not a failed check,
+  // Why say so: a silently file-only report looks identical to one where every probe
+  // happened to come back clean.
+  if (!probing && files.length > 0) {
+    findings.push({
+      code: 'live_state_not_probed',
+      severity: 'unverifiable',
+      message: options.noProbe
+        ? 'Live state was not checked (--no-probe).'
+        : `Live state was not checked: ${files.length} service definitions found, so any result would be ambiguous about which one it described.`
+    })
+  }
+  // Why not non-zero on unverifiable: a check that could not run is not a failed check,
   // and a doctor that exits 1 on "could not verify" trains operators to ignore it.
-  return supervisorAuditPassed(findings) ? 0 : 1
+  return { findings, code: supervisorAuditPassed(findings) ? 0 : 1 }
 }
 
-/**
- * Returns null when this invocation is a normal server start, so `main.ts` can keep the
- * early-exit block a straight-line read.
- */
+export async function runDoctor(argv: string[]): Promise<number> {
+  const { findings, code } = await collectDoctorFindings(argv)
+  process.stdout.write(`${formatFindings(findings)}\n`)
+  return code
+}
+
 /** True when this invocation is a service command rather than a server start. */
 export function isServiceCommand(argv: string[]): boolean {
   return argv.includes(PRINT_SERVICE_FLAG) || argv.includes(DOCTOR_FLAG)
