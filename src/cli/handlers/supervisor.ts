@@ -10,7 +10,24 @@
 import { hostname } from 'node:os'
 import process from 'node:process'
 import type { CommandHandler } from '../dispatch'
-import { printService, runDoctor } from '../../main/orcad/orcad-service-command'
+import { RuntimeClientError } from '../runtime/types'
+import {
+  collectDoctorFindings,
+  printService,
+  runDoctor
+} from '../../main/orcad/orcad-service-command'
+import { SupervisorServiceUnsupportedError } from '../../shared/supervisor-service-render'
+
+/** Why translate: an unsupported platform is a bad request, not a CLI crash. */
+async function reportingUnsupported<T>(run: () => Promise<T> | T): Promise<T> {
+  try {
+    return await run()
+  } catch (error) {
+    throw error instanceof SupervisorServiceUnsupportedError
+      ? new RuntimeClientError('invalid_argument', error.message)
+      : error
+  }
+}
 
 /** Rebuilds the argv the orcad-side parser expects from the CLI's parsed flag map. */
 function toServiceArgv(flags: Map<string, string | boolean>, names: string[]): string[] {
@@ -27,12 +44,29 @@ function toServiceArgv(flags: Map<string, string | boolean>, names: string[]): s
 }
 
 export const SUPERVISOR_HANDLERS: Record<string, CommandHandler> = {
-  'supervisor print': async ({ flags }) => {
-    printService(toServiceArgv(flags, ['scope', 'user', 'node', 'port', 'bind']))
+  'supervisor print': async ({ flags, json }) => {
+    // Why refuse rather than ignore: stdout here is a file meant to be redirected, so
+    // honouring --json would hand a scripted caller a unit file wrapped in nothing.
+    if (json) {
+      throw new RuntimeClientError(
+        'invalid_argument',
+        'supervisor print writes a service definition to stdout, so it has no JSON form. Drop --json.'
+      )
+    }
+    await reportingUnsupported(() =>
+      printService(toServiceArgv(flags, ['scope', 'user', 'node', 'port', 'bind']))
+    )
   },
-  'supervisor doctor': async ({ flags }) => {
+  'supervisor doctor': async ({ flags, json }) => {
+    const argv = toServiceArgv(flags, ['service-path', 'no-probe'])
+    if (json) {
+      const { findings, code } = await reportingUnsupported(() => collectDoctorFindings(argv))
+      process.stdout.write(`${JSON.stringify({ host: hostname(), findings }, null, 2)}\n`)
+      process.exitCode = code
+      return
+    }
     process.stdout.write(`Inspecting service definitions on ${hostname()} (this machine).\n\n`)
-    const code = await runDoctor(toServiceArgv(flags, ['service-path', 'no-probe']))
+    const code = await reportingUnsupported(() => runDoctor(argv))
     if (code !== 0) {
       process.exitCode = code
     }

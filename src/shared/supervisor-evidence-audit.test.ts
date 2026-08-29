@@ -17,7 +17,14 @@ function unavailable(reason: string): Probe<never> {
 function running(overrides: Partial<UnitState> = {}): Probe<UnitState> {
   return {
     status: 'observed',
-    value: { active: 'active', sub: 'running', result: 'success', restarts: 0, ...overrides }
+    value: {
+      load: 'loaded',
+      active: 'active',
+      sub: 'running',
+      result: 'success',
+      restarts: 0,
+      ...overrides
+    }
   }
 }
 
@@ -123,5 +130,33 @@ describe('configured port', () => {
     })
     const port = findings.find((finding) => finding.code === 'configured_port_silent')
     expect(port?.message).toBe('Nothing is listening on the configured port.')
+  })
+})
+
+describe('load state', () => {
+  // The likeliest mistake in a print-and-place workflow: the file is written but never
+  // loaded. systemctl show exits 0 and calls that `inactive`, which is also what a service
+  // someone deliberately stopped looks like.
+  it('separates a never-loaded unit from a stopped one', () => {
+    const findings = auditSupervisorEvidence({
+      unitState: running({ load: 'not-found', active: 'inactive', sub: 'dead' })
+    })
+    expect(findings[0].code).toBe('unit_not_loaded')
+    expect(findings[0].message).toMatch(/Placing the file is not the last step/)
+    expect(findings[0].remedy).toContain('daemon-reload')
+  })
+
+  it('reports a masked unit, which no file contents can fix', () => {
+    const findings = auditSupervisorEvidence({
+      unitState: running({ load: 'masked', active: 'inactive', sub: 'dead' })
+    })
+    expect(findings[0].code).toBe('unit_masked')
+  })
+
+  it('still reports a genuinely stopped loaded unit as stopped', () => {
+    const findings = auditSupervisorEvidence({
+      unitState: running({ load: 'loaded', active: 'inactive', sub: 'dead' })
+    })
+    expect(findings[0].code).toBe('unit_inactive')
   })
 })

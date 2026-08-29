@@ -33,7 +33,27 @@ function auditUnitState(evidence: SupervisorEvidence): SupervisorFinding | null 
   if (probe.status !== 'observed') {
     return unverified('unit_state_unverified', probe, 'Whether the service is running')
   }
-  const { active, sub, result, restarts } = probe.value
+  const { load, active, sub, result, restarts } = probe.value
+  // Checked before ActiveState, which reads `inactive` for a unit the supervisor has
+  // never loaded — the same answer as a service someone deliberately stopped.
+  if (load === 'not-found') {
+    return {
+      code: 'unit_not_loaded',
+      severity: 'warning',
+      message:
+        'The file is on disk but the supervisor has never loaded it, so nothing is ' +
+        'supervising orcad. Placing the file is not the last step.',
+      remedy: 'systemctl daemon-reload, then systemctl enable --now <unit>'
+    }
+  }
+  if (load === 'masked') {
+    return {
+      code: 'unit_masked',
+      severity: 'warning',
+      message: 'The unit is masked, so it will never start no matter what the file says.',
+      remedy: 'systemctl unmask <unit>'
+    }
+  }
   // A failed unit after exit 78 is the stranding the generated file warns about: it will
   // not come back on its own even once the cause is gone.
   if (active === 'failed') {

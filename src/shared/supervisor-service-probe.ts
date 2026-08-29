@@ -21,6 +21,13 @@ export type Probe<T> =
   | { status: 'unavailable'; reason: string }
 
 export type UnitState = {
+  /**
+   * Whether the supervisor knows about the unit at all. Load-bearing because
+   * `systemctl show` exits 0 for a unit it has never heard of and reports
+   * `ActiveState=inactive` — indistinguishable from a service someone stopped, and the
+   * likeliest state in a workflow that prints a file for an operator to place by hand.
+   */
+  load: string
   active: string
   sub: string
   result: string
@@ -97,7 +104,7 @@ async function probeSystemdUnit(target: ProbeTarget): Promise<Probe<UnitState>> 
     ...scopeArgs,
     'show',
     target.name,
-    '--property=ActiveState,SubState,Result,NRestarts'
+    '--property=LoadState,ActiveState,SubState,Result,NRestarts'
   ])
   if (!captured.ok) {
     // A user-scope query without a session bus fails exactly like an absent unit, so the
@@ -112,6 +119,7 @@ async function probeSystemdUnit(target: ProbeTarget): Promise<Probe<UnitState>> 
   return {
     status: 'observed',
     value: {
+      load: values.get('LoadState') ?? 'unknown',
       active,
       sub: values.get('SubState') ?? 'unknown',
       result: values.get('Result') ?? 'unknown',
@@ -134,6 +142,8 @@ async function probeLaunchdJob(target: ProbeTarget): Promise<Probe<UnitState>> {
   return {
     status: 'observed',
     value: {
+      // launchctl print answering at all means the job is loaded.
+      load: 'loaded',
       active: state === 'running' ? 'active' : state,
       sub: state,
       result: /\blast exit code\s*=\s*(\d+)/.exec(captured.stdout)?.[1] ?? 'unknown',
