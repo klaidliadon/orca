@@ -12,14 +12,17 @@
  */
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import process from 'node:process'
 import {
   auditSupervisorServices,
+  readConfiguredEndpoint,
   supervisorAuditPassed,
   type SupervisorFinding,
   type SupervisorServiceFile
 } from '../../shared/supervisor-service-audit'
+import { gatherSupervisorEvidence } from '../../shared/supervisor-service-probe'
+import type { ProbeTarget } from '../../shared/supervisor-service-probe'
 import {
   ORCAD_LAUNCHD_LABEL,
   ORCAD_SYSTEMD_UNIT_NAME,
@@ -45,6 +48,8 @@ type ServiceCommandOptions = {
   bind: string
   /** Audit a definition outside the conventional locations. */
   servicePath?: string
+  /** Skip live probes: the file-only audit, for a host where shelling out is unwanted. */
+  noProbe?: boolean
 }
 
 /**
@@ -79,6 +84,8 @@ export function parseServiceCommandArgs(argv: string[]): ServiceCommandOptions {
       }
       options.servicePath = value
       i += 1
+    } else if (argv[i] === '--no-probe') {
+      options.noProbe = true
     } else if (argv[i] === '--port') {
       const port = Number(value)
       if (!Number.isInteger(port) || port < 0 || port > 65535) {
@@ -210,12 +217,41 @@ export function formatFindings(findings: SupervisorFinding[]): string {
     .join('\n')
 }
 
-export function runDoctor(argv: string[]): number {
+/**
+ * Why the discovered file's own basename and not a constant: discovery searches the
+ * conventional locations AND accepts an explicit path, precisely because an operator may
+ * have renamed things. Probing a constant would query a unit that does not exist and
+ * report the file we did find as not running.
+ */
+function probeTargetFor(file: SupervisorServiceFile, options: ServiceCommandOptions): ProbeTarget {
+  const name = basename(file.path, file.platform === 'launchd' ? '.plist' : '')
+  // The endpoint comes from the file for the same reason the unit name does: the flags
+  // describe what to generate, the file describes what is actually installed.
+  const endpoint = readConfiguredEndpoint(file)
+  return {
+    platform: file.platform,
+    scope: file.scope,
+    name,
+    user: options.user ?? userInfo().username,
+    bind: endpoint?.bind ?? options.bind,
+    port: endpoint?.port ?? options.port
+  }
+}
+
+export async function runDoctor(argv: string[]): Promise<number> {
   const platform = resolveSupervisorPlatform(process.platform)
   const options = parseServiceCommandArgs(argv)
+  const files = collectServiceFiles(platform, options.servicePath ? [options.servicePath] : [])
+  // Only probe when there is exactly one definition: with two, every probe result would be
+  // ambiguous about which one it described, and the duplicate finding is the story anyway.
+  const evidence =
+    files.length === 1 && !options.noProbe
+      ? await gatherSupervisorEvidence(probeTargetFor(files[0], options))
+      : undefined
   const findings = auditSupervisorServices({
-    files: collectServiceFiles(platform, options.servicePath ? [options.servicePath] : []),
-    expectedUserDataPath: resolveUserDataPath()
+    files,
+    expectedUserDataPath: resolveUserDataPath(),
+    evidence
   })
   process.stdout.write(`${formatFindings(findings)}\n`)
   // Why not non-zero on unverifiable: a check this could not run is not a failed check,
@@ -227,14 +263,14 @@ export function runDoctor(argv: string[]): number {
  * Returns null when this invocation is a normal server start, so `main.ts` can keep the
  * early-exit block a straight-line read.
  */
-export function runServiceCommandIfRequested(argv: string[]): number | null {
-  const wantsPrint = argv.includes(PRINT_SERVICE_FLAG)
-  const wantsDoctor = argv.includes(DOCTOR_FLAG)
-  if (!wantsPrint && !wantsDoctor) {
-    return null
-  }
+/** True when this invocation is a service command rather than a server start. */
+export function isServiceCommand(argv: string[]): boolean {
+  return argv.includes(PRINT_SERVICE_FLAG) || argv.includes(DOCTOR_FLAG)
+}
+
+export async function runServiceCommand(argv: string[]): Promise<number> {
   try {
-    return wantsPrint ? printService(argv) : runDoctor(argv)
+    return argv.includes(PRINT_SERVICE_FLAG) ? printService(argv) : await runDoctor(argv)
   } catch (error) {
     const unsupported = error instanceof SupervisorServiceUnsupportedError
     process.stderr.write(`orcad: ${error instanceof Error ? error.message : String(error)}\n`)

@@ -10,6 +10,8 @@
  * unverified rather than as a negative: a failed probe is not evidence of a stopped
  * service, and guessing is the failure mode `ssh-execution-boundary.md` forbids.
  */
+import { auditSupervisorEvidence } from './supervisor-evidence-audit'
+import type { SupervisorEvidence } from './supervisor-service-probe'
 import {
   DISCOURAGED_SYSTEMD_KILL_MODES,
   SAFE_SYSTEMD_KILL_MODES,
@@ -39,6 +41,8 @@ export type SupervisorAuditInput = {
   files: SupervisorServiceFile[]
   /** What the calling shell resolves, to compare against what the file pins. */
   expectedUserDataPath: string
+  /** Absent is legal: with no evidence this is exactly the file-only audit. */
+  evidence?: SupervisorEvidence
 }
 
 /** systemd `Key=value`, ignoring comments. Last assignment wins, as systemd itself does. */
@@ -88,6 +92,25 @@ function readPinnedUserData(file: SupervisorServiceFile): string | null {
   }
   const dict = /<key>\s*EnvironmentVariables\s*<\/key>\s*<dict>([\s\S]*?)<\/dict>/i.exec(file.text)
   return dict ? readPlistString(dict[1], 'ORCA_USER_DATA') : null
+}
+
+/**
+ * The endpoint the service will actually try to bind, read from the file rather than from
+ * the caller's flags — probing a default port while the file names another one reports the
+ * wrong answer with full confidence.
+ */
+export function readConfiguredEndpoint(
+  file: SupervisorServiceFile
+): { bind: string; port: number } | null {
+  const command =
+    file.platform === 'systemd'
+      ? (readSystemdKey(file.text, 'ExecStart') ?? '')
+      : [...file.text.matchAll(/<string>([^<]*)<\/string>/g)].map((match) => match[1]).join(' ')
+  const port = Number(/--port[\s=]+(\d+)/.exec(command)?.[1])
+  if (!Number.isInteger(port)) {
+    return null
+  }
+  return { bind: /--bind[\s=]+(\S+)/.exec(command)?.[1] ?? '127.0.0.1', port }
 }
 
 /**
@@ -299,7 +322,7 @@ export function auditSupervisorServices(input: SupervisorAuditInput): Supervisor
       }
     ]
   }
-  const findings: SupervisorFinding[] = []
+  let findings: SupervisorFinding[] = []
   const duplicates = auditDuplicates(input)
   if (duplicates) {
     findings.push(duplicates)
@@ -316,6 +339,14 @@ export function auditSupervisorServices(input: SupervisorAuditInput): Supervisor
     if (exec) {
       findings.push(exec)
     }
+  }
+  if (input.evidence) {
+    const live = auditSupervisorEvidence(input.evidence)
+    // A live linger reading answers what the file-level check could only call unreadable.
+    if (live.some((finding) => finding.code.startsWith('linger'))) {
+      findings = findings.filter((finding) => finding.code !== 'linger_unverified')
+    }
+    findings.push(...live)
   }
   const rank: Record<SupervisorFindingSeverity, number> = {
     critical: 0,

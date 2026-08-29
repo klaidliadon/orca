@@ -2,16 +2,21 @@ import { describe, expect, it } from 'vitest'
 import {
   formatFindings,
   inferScopeFromPath,
-  parseServiceCommandArgs,
-  runServiceCommandIfRequested
+  isServiceCommand,
+  parseServiceCommandArgs
 } from './orcad-service-command'
 
 describe('flag routing', () => {
   // B1: these flags are handled before the native preflight, so a normal start must not be
   // diverted by them — and orcad's own parseArgs would reject them outright if they leaked.
   it('leaves a normal server start alone', () => {
-    expect(runServiceCommandIfRequested(['--port', '6800', '--json'])).toBeNull()
-    expect(runServiceCommandIfRequested([])).toBeNull()
+    expect(isServiceCommand(['--port', '6800', '--json'])).toBe(false)
+    expect(isServiceCommand([])).toBe(false)
+  })
+
+  it('claims the invocation for either service flag', () => {
+    expect(isServiceCommand(['--print-service'])).toBe(true)
+    expect(isServiceCommand(['--doctor'])).toBe(true)
   })
 })
 
@@ -36,7 +41,8 @@ describe('argument parsing', () => {
       '--bind',
       '0.0.0.0',
       '--service-path',
-      '/tmp/orcad.service'
+      '/tmp/orcad.service',
+      '--no-probe'
     ])
     expect(options).toEqual({
       scope: 'user',
@@ -44,7 +50,8 @@ describe('argument parsing', () => {
       nodePath: '/usr/bin/node',
       port: 7000,
       bind: '0.0.0.0',
-      servicePath: '/tmp/orcad.service'
+      servicePath: '/tmp/orcad.service',
+      noProbe: true
     })
   })
 

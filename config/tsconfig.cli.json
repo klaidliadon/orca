@@ -113,6 +113,11 @@
     // Why: serve-electron-flag-parity.test.ts checks the Electron-side serve argv rewrite against this
     // project's serve spec; the module has no imports, so listing it pulls in nothing else.
     "../src/main/startup/serve-mode-argv.ts",
+    // Why: `orca supervisor` is a thin front door over the same generator and audit orcad
+    // exposes. Both modules import only node builtins and src/shared, so listing them
+    // pulls in nothing else.
+    "../src/main/orcad/orcad-app-paths.ts",
+    "../src/main/orcad/orcad-service-command.ts",
     "../src/main/runtime/runtime-metadata.ts",
     "../src/main/sqlite/sync-database.ts",
     "../src/main/win32-utils.ts"
