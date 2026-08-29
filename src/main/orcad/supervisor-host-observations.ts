@@ -11,9 +11,28 @@ import { join } from 'node:path'
 import type { ExecTargetState, JournalState, Probe } from '../../shared/supervisor-service-probe'
 import {
   readExecTarget,
+  readPinnedUserData,
   readSystemdKey,
   type SupervisorServiceFile
 } from '../../shared/supervisor-service-file-read'
+import { resolveRealPath } from './supervisor-generation-warnings'
+
+/**
+ * Two spellings of one directory are not a split profile. Since the generator started
+ * pinning a realpath, a host whose data root sits behind a symlink — DSM's
+ * /var/services/homes -> /volume2/homes — otherwise reports a mismatch on every run.
+ */
+export function observeDataRootIdentity(
+  file: SupervisorServiceFile,
+  expected: string
+): Probe<boolean> | undefined {
+  const pinned = readPinnedUserData(file)
+  if (pinned === null) {
+    // Nothing pinned is its own (critical) finding; there is no identity to compare.
+    return undefined
+  }
+  return { status: 'observed', value: resolveRealPath(pinned) === resolveRealPath(expected) }
+}
 
 export function observeExecTarget(file: SupervisorServiceFile): Probe<ExecTargetState> {
   const target = readExecTarget(file)

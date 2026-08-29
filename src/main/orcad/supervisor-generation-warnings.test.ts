@@ -1,8 +1,13 @@
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { resolveRealPath, versionScopedInterpreterWarning } from './supervisor-generation-warnings'
+import process from 'node:process'
+import {
+  interpreterOnDiskWarning,
+  resolveRealPath,
+  versionScopedInterpreterWarning
+} from './supervisor-generation-warnings'
 
 describe('version-scoped interpreter', () => {
   // One `brew upgrade node` removes the Cellar directory the unit names, and it dies
@@ -54,5 +59,31 @@ describe('realpath resolution', () => {
   it('returns an entirely absent path unchanged rather than throwing', () => {
     const absent = join(root, 'no', 'such', 'path')
     expect(resolveRealPath(absent)).toBe(absent)
+  })
+})
+
+describe('--node validation', () => {
+  // The version-scoped warning tells operators to pass --node, and --node was the one
+  // interpreter source with no validation. The default cannot have this problem, so the
+  // gap bit only the people who did what the warning told them to.
+  it('warns when a chosen interpreter is not on this host', () => {
+    const warning = interpreterOnDiskWarning('/nonexistent/node', true)
+    expect(warning).toMatch(/does not exist/)
+    expect(warning).toMatch(/203\/EXEC/)
+  })
+
+  it('warns when it exists but cannot be executed', () => {
+    const notExecutable = join(mkdtempSync(join(tmpdir(), 'orca-node-')), 'node')
+    writeFileSync(notExecutable, '', { mode: 0o644 })
+    expect(interpreterOnDiskWarning(notExecutable, true)).toMatch(/not executable/)
+  })
+
+  it('stays quiet for an interpreter that is present and executable', () => {
+    expect(interpreterOnDiskWarning(process.execPath, true)).toBeNull()
+  })
+
+  // process.execPath is tautologically on disk, so checking it would only add noise.
+  it('says nothing about the default interpreter', () => {
+    expect(interpreterOnDiskWarning('/nonexistent/node', false)).toBeNull()
   })
 })

@@ -57,6 +57,12 @@ export type SupervisorEvidence = {
   execTarget?: Probe<ExecTargetState>
   /** Read from journald.conf, likewise a file read rather than a probe. */
   journal?: Probe<JournalState>
+  /**
+   * Whether the pinned data root and the caller's resolve to the same directory. A string
+   * comparison cannot answer this: once the generator started pinning a realpath, a host
+   * whose root sits behind a symlink reports two spellings of one directory.
+   */
+  dataRootSameDirectory?: Probe<boolean>
 }
 
 /** What to ask about, derived from the file discovery rather than from a constant. */

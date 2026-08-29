@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { auditSupervisorEvidence } from './supervisor-evidence-audit'
+import { auditSupervisorEvidence, supersededFileFindingCodes } from './supervisor-evidence-audit'
 import type { Probe, SupervisorEvidence, UnitState } from './supervisor-service-probe'
 
 const UNAVAILABLE_REASONS = [
@@ -238,5 +238,32 @@ describe('journal persistence', () => {
         journal: { status: 'observed', value: { storage: 'persistent', unitUsesJournal: true } }
       })
     ).toEqual([])
+  })
+})
+
+describe('data root identity', () => {
+  // Two spellings of one directory are not a split profile. Since the generator began
+  // pinning a realpath, a host whose root sits behind a symlink reported a mismatch on
+  // every run — noise, by construction, on every such host.
+  it('reports the roots as one directory when they resolve the same', () => {
+    expect(codes({ dataRootSameDirectory: { status: 'observed', value: true } })).toEqual([
+      'user_data_same_directory'
+    ])
+  })
+
+  it('supersedes the file audit string mismatch when they are one directory', () => {
+    const live = auditSupervisorEvidence({
+      dataRootSameDirectory: { status: 'observed', value: true }
+    })
+    expect(supersededFileFindingCodes(live)).toContain('user_data_mismatch')
+  })
+
+  it('leaves a genuine mismatch to the file audit', () => {
+    expect(codes({ dataRootSameDirectory: { status: 'observed', value: false } })).toEqual([])
+    expect(
+      supersededFileFindingCodes(
+        auditSupervisorEvidence({ dataRootSameDirectory: { status: 'observed', value: false } })
+      )
+    ).not.toContain('user_data_mismatch')
   })
 })

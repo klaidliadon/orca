@@ -5,7 +5,7 @@
  * Both are warnings rather than refusals: a definition is often generated on one host to be
  * installed on another, so an unusable local scope is not proof the file is wrong.
  */
-import { existsSync, realpathSync } from 'node:fs'
+import { accessSync, constants, existsSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import process from 'node:process'
 import { runProcess } from '../../shared/child-process/run-process'
@@ -36,6 +36,37 @@ export function versionScopedInterpreterWarning(nodePath: string): string | null
     '203/EXEC. Pass --node with a stable path (the manager’s current-version symlink) ' +
     'if you want the service to survive an interpreter upgrade.'
   )
+}
+
+/**
+ * Why this exists at all: the version-scoped warning above tells operators to pass
+ * `--node`, and `--node` was the one interpreter source with no validation. The default
+ * cannot have the problem — `process.execPath` is tautologically on disk — so the gap bit
+ * only the people who did what the warning told them to.
+ *
+ * A warning rather than a refusal, on the same ground as the user-scope warning: generating
+ * on one host to install on another is legitimate, and the path may exist only there.
+ */
+export function interpreterOnDiskWarning(nodePath: string, wasChosen: boolean): string | null {
+  if (!wasChosen) {
+    return null
+  }
+  if (!existsSync(nodePath)) {
+    return (
+      `Warning: --node ${nodePath} does not exist on this host, so the service would fail ` +
+      '203/EXEC if installed here. Intentional when you are generating for another host; ' +
+      'otherwise check the path.'
+    )
+  }
+  try {
+    accessSync(nodePath, constants.X_OK)
+  } catch {
+    return (
+      `Warning: --node ${nodePath} exists but is not executable, so the service would fail ` +
+      '203/EXEC. Point --node at the interpreter binary itself.'
+    )
+  }
+  return null
 }
 
 /**

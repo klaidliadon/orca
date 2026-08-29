@@ -141,6 +141,11 @@ export function supersededFileFindingCodes(live: readonly SupervisorFinding[]): 
   if (live.some((finding) => LINGER_CODES.has(finding.code))) {
     superseded.push('linger_unverified')
   }
+  // The file audit can only compare the two roots as strings, which since the generator
+  // began pinning a realpath reads two spellings of one directory as a split profile.
+  if (live.some((finding) => finding.code === 'user_data_same_directory')) {
+    superseded.push('user_data_mismatch')
+  }
   return superseded
 }
 
@@ -203,8 +208,22 @@ function auditJournalPersistence(evidence: SupervisorEvidence): SupervisorFindin
   }
 }
 
+function auditDataRootIdentity(evidence: SupervisorEvidence): SupervisorFinding | null {
+  const probe = evidence.dataRootSameDirectory
+  if (!probe || probe.status !== 'observed' || !probe.value) {
+    // A genuine mismatch needs no finding here: the file audit already reported it.
+    return null
+  }
+  return {
+    code: 'user_data_same_directory',
+    severity: 'ok',
+    message: 'The service and this shell resolve the same data root directory.'
+  }
+}
+
 export function auditSupervisorEvidence(evidence: SupervisorEvidence): SupervisorFinding[] {
   return [
+    auditDataRootIdentity(evidence),
     auditUnitState(evidence),
     auditLinger(evidence),
     auditConfiguredPort(evidence),
