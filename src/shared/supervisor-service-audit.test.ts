@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   auditSupervisorServices,
+  readConfiguredEndpoint,
   supervisorAuditPassed,
   type SupervisorServiceFile
 } from './supervisor-service-audit'
@@ -171,5 +172,34 @@ describe('unverifiable is never a negative verdict', () => {
 
   it('warns that a LaunchAgent dies at logout', () => {
     expect(codes([file({ platform: 'launchd', scope: 'user' })])).toContain('launch_agent_scope')
+  })
+})
+
+describe('configured endpoint', () => {
+  // Probing a flag default while the file names another port answers the wrong question
+  // with full confidence — caught by running it, not by reading it.
+  it('reads the endpoint the installed file will actually bind', () => {
+    const text = file()
+      .text.replace('--port 6800', '--port 6899')
+      .replace('--bind 127.0.0.1', '--bind 0.0.0.0')
+    expect(readConfiguredEndpoint(file({ text }))).toEqual({ bind: '0.0.0.0', port: 6899 })
+  })
+
+  it('reads it out of plist ProgramArguments too', () => {
+    const plist = renderSupervisorService({
+      platform: 'launchd',
+      scope: 'system',
+      nodePath: '/usr/local/bin/node',
+      orcadPath: '/opt/orcad/orcad.js',
+      userDataPath: ROOT,
+      user: 'orca',
+      bind: '127.0.0.1',
+      port: 7100
+    })
+    expect(readConfiguredEndpoint(file({ platform: 'launchd', text: plist }))?.port).toBe(7100)
+  })
+
+  it('returns null rather than a guess when no port is named', () => {
+    expect(readConfiguredEndpoint(file({ text: HOMEBREW_SHAPED_UNIT }))).toBeNull()
   })
 })
