@@ -34,11 +34,29 @@ export type UnitState = {
   restarts: number
 }
 
+export type ExecTargetState = {
+  interpreter: string
+  interpreterExists: boolean
+  script: string | null
+  scriptExists: boolean
+}
+
+export type JournalState = {
+  /** journald's `Storage=`. `volatile` means the journal lives in /run and dies on reboot. */
+  storage: string
+  /** Only meaningful when the audited unit actually logs to the journal. */
+  unitUsesJournal: boolean
+}
+
 export type SupervisorEvidence = {
   unitState?: Probe<UnitState>
   linger?: Probe<boolean>
   /** A listener on the configured port. Not proof it is orcad — see the audit's wording. */
   configuredPortListening?: Probe<boolean>
+  /** A stat, not a subprocess, so `--no-probe` does not suppress it. */
+  execTarget?: Probe<ExecTargetState>
+  /** Read from journald.conf, likewise a file read rather than a probe. */
+  journal?: Probe<JournalState>
 }
 
 /** What to ask about, derived from the file discovery rather than from a constant. */

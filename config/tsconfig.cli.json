@@ -118,6 +118,8 @@
     // pulls in nothing else.
     "../src/main/orcad/orcad-app-paths.ts",
     "../src/main/orcad/orcad-service-command.ts",
+    "../src/main/orcad/supervisor-generation-warnings.ts",
+    "../src/main/orcad/supervisor-host-observations.ts",
     "../src/main/runtime/runtime-metadata.ts",
     "../src/main/sqlite/sync-database.ts",
     "../src/main/win32-utils.ts"

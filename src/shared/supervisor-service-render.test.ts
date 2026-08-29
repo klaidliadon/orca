@@ -127,3 +127,25 @@ describe('platform resolution', () => {
     expect(() => resolveSupervisorPlatform('win32')).toThrow(SupervisorServiceUnsupportedError)
   })
 })
+
+describe('mount ordering', () => {
+  // systemd maps RequiresMountsFor to a mount unit textually, walking up parent
+  // directories, so it only reaches a real mount when the caller passed a realpath.
+  it('orders the unit after the mount carrying the data root', () => {
+    const unit = renderSupervisorService(config({ userDataPath: '/volume2/homes/me/.orca' }))
+    expect(unit).toContain('RequiresMountsFor=/volume2/homes/me/.orca')
+  })
+
+  it('puts it in [Unit], where systemd reads it', () => {
+    const unit = renderSupervisorService(config())
+    const unitSection = unit.slice(unit.indexOf('[Unit]'), unit.indexOf('[Service]'))
+    expect(unitSection).toMatch(/^RequiresMountsFor=/m)
+  })
+
+  it('names the same path the service will actually use', () => {
+    const unit = renderSupervisorService(config({ userDataPath: '/volume2/homes/me/.orca' }))
+    const mount = /^RequiresMountsFor=(.*)$/m.exec(unit)?.[1]
+    const environment = /^Environment=ORCA_USER_DATA=(.*)$/m.exec(unit)?.[1]
+    expect(mount).toBe(environment)
+  })
+})
