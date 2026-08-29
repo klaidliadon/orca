@@ -17,6 +17,7 @@ import process from 'node:process'
 import {
   auditSupervisorServices,
   readConfiguredEndpoint,
+  sortBySeverity,
   supervisorAuditPassed,
   type SupervisorFinding,
   type SupervisorServiceFile
@@ -269,7 +270,7 @@ export async function collectDoctorFindings(
   }
   // Why not non-zero on unverifiable: a check that could not run is not a failed check,
   // and a doctor that exits 1 on "could not verify" trains operators to ignore it.
-  return { findings, code: supervisorAuditPassed(findings) ? 0 : 1 }
+  return { findings: sortBySeverity(findings), code: supervisorAuditPassed(findings) ? 0 : 1 }
 }
 
 export async function runDoctor(argv: string[]): Promise<number> {

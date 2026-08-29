@@ -129,7 +129,13 @@ async function probeSystemdUnit(target: ProbeTarget): Promise<Probe<UnitState>> 
 }
 
 async function probeLaunchdJob(target: ProbeTarget): Promise<Probe<UnitState>> {
-  const domain = target.scope === 'system' ? 'system' : `gui/${process.getuid?.() ?? ''}`
+  const uid = process.getuid?.()
+  if (target.scope === 'user' && uid === undefined) {
+    // `gui/` with no uid is not a domain launchctl accepts; asking anyway would return a
+    // parse error that reads like the job being absent.
+    return unavailable('cannot address the gui domain: this platform reports no uid')
+  }
+  const domain = target.scope === 'system' ? 'system' : `gui/${uid}`
   const captured = await capture('launchctl', ['print', `${domain}/${target.name}`])
   if (!captured.ok) {
     // The system domain refuses without root; that is inability, not absence.

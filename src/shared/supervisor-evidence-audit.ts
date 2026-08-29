@@ -131,6 +131,21 @@ function auditConfiguredPort(evidence: SupervisorEvidence): SupervisorFinding | 
   }
 }
 
+/**
+ * File-level findings that a live answer replaces. Declared here because this module owns
+ * the knowledge; the caller matching on code prefixes coupled the two by string shape, and
+ * any future `linger*` code would have silently changed which findings got dropped.
+ */
+export function supersededFileFindingCodes(live: readonly SupervisorFinding[]): string[] {
+  const superseded: string[] = []
+  if (live.some((finding) => LINGER_CODES.has(finding.code))) {
+    superseded.push('linger_unverified')
+  }
+  return superseded
+}
+
+const LINGER_CODES = new Set(['linger_enabled', 'linger_disabled', 'linger_unverified_live'])
+
 export function auditSupervisorEvidence(evidence: SupervisorEvidence): SupervisorFinding[] {
   return [auditUnitState(evidence), auditLinger(evidence), auditConfiguredPort(evidence)].filter(
     (finding): finding is SupervisorFinding => finding !== null
