@@ -2,6 +2,7 @@
 import process from 'node:process'
 import { main, resolveOrcadExitCode } from './orcad-entry'
 import { runOrcadNativePreflight } from './orcad-native-preflight'
+import { runServiceCommandIfRequested } from './orcad-service-command'
 
 // Why exit before the preflight: reaching this line means the whole module graph resolved
 // under plain Node, which is all the build guard needs to prove. Probing natives or
@@ -9,6 +10,14 @@ import { runOrcadNativePreflight } from './orcad-native-preflight'
 // machine.
 if (process.argv.includes('--orcad-smoke-load-check')) {
   process.exit(0)
+}
+
+// Same reason, and one more: generating or auditing a service definition is exactly what an
+// operator does on a host where node-pty is not working yet, so it must not run the native
+// preflight. `parseArgs` would also reject these flags outright.
+const serviceExitCode = runServiceCommandIfRequested(process.argv.slice(2))
+if (serviceExitCode !== null) {
+  process.exit(serviceExitCode)
 }
 
 // Why here and not inside startOrcad: this must run before anything requires node-pty,
