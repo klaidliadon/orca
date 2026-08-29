@@ -23,7 +23,11 @@ import {
   type SupervisorServiceFile
 } from '../../shared/supervisor-service-audit'
 import { gatherSupervisorEvidence } from '../../shared/supervisor-service-probe'
-import { observeExecTarget, observeJournal } from './supervisor-host-observations'
+import {
+  observeDataRootIdentity,
+  observeExecTarget,
+  observeJournal
+} from './supervisor-host-observations'
 import type { ProbeTarget } from '../../shared/supervisor-service-probe'
 import {
   ORCAD_LAUNCHD_LABEL,
@@ -37,6 +41,7 @@ import {
 } from '../../shared/supervisor-service-render'
 import { resolveUserDataPath } from './orcad-app-paths'
 import {
+  interpreterOnDiskWarning,
   resolveRealPath,
   userScopeUnavailableWarning,
   versionScopedInterpreterWarning
@@ -148,6 +153,7 @@ export async function printService(argv: string[]): Promise<number> {
   // warning folded into it reads as part of the instructions rather than a caveat on them.
   const warnings = [
     versionScopedInterpreterWarning(nodePath),
+    interpreterOnDiskWarning(nodePath, options.nodePath !== undefined),
     ...(platform === 'systemd' && options.scope === 'user'
       ? [await userScopeUnavailableWarning()]
       : [])
@@ -273,9 +279,14 @@ export async function collectDoctorFindings(
   const probing = files.length === 1 && !options.noProbe
   // Why these two run even under --no-probe: they are a stat and a config read, not a
   // subprocess, and they stay useful on a host where every live probe is refused.
+  const expectedUserDataPath = resolveUserDataPath()
   const onDisk =
     files.length === 1
-      ? { execTarget: observeExecTarget(files[0]), journal: observeJournal(files[0]) }
+      ? {
+          execTarget: observeExecTarget(files[0]),
+          journal: observeJournal(files[0]),
+          dataRootSameDirectory: observeDataRootIdentity(files[0], expectedUserDataPath)
+        }
       : {}
   const evidence = probing
     ? { ...(await gatherSupervisorEvidence(probeTargetFor(files[0], options))), ...onDisk }
@@ -284,7 +295,7 @@ export async function collectDoctorFindings(
       : undefined
   const findings = auditSupervisorServices({
     files,
-    expectedUserDataPath: resolveUserDataPath(),
+    expectedUserDataPath,
     evidence
   })
   // Why say so: a silently file-only report looks identical to one where every probe
