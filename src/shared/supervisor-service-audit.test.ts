@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   auditSupervisorServices,
   readConfiguredEndpoint,
+  sortBySeverity,
   supervisorAuditPassed,
   type SupervisorServiceFile
 } from './supervisor-service-audit'
@@ -201,5 +202,52 @@ describe('configured endpoint', () => {
 
   it('returns null rather than a guess when no port is named', () => {
     expect(readConfiguredEndpoint(file({ text: HOMEBREW_SHAPED_UNIT }))).toBeNull()
+  })
+})
+
+describe('severity ordering', () => {
+  // A finding appended by a caller after the audit returned was landing past the OK rows,
+  // where an operator scanning top-down stops reading before reaching it.
+  it('keeps every severity in rank order, including appended findings', () => {
+    const sorted = sortBySeverity([
+      { code: 'a', severity: 'ok', message: 'ok' },
+      { code: 'b', severity: 'unverifiable', message: 'appended late' },
+      { code: 'c', severity: 'critical', message: 'critical' },
+      { code: 'd', severity: 'ok', message: 'ok' },
+      { code: 'e', severity: 'warning', message: 'warning' }
+    ])
+    expect(sorted.map((finding) => finding.severity)).toEqual([
+      'critical',
+      'warning',
+      'unverifiable',
+      'ok',
+      'ok'
+    ])
+  })
+
+  it("does not mutate the caller's array", () => {
+    const input: Parameters<typeof sortBySeverity>[0] = [
+      { code: 'a', severity: 'ok', message: 'ok' },
+      { code: 'b', severity: 'critical', message: 'critical' }
+    ]
+    sortBySeverity(input)
+    expect(input.map((finding) => finding.code)).toEqual(['a', 'b'])
+  })
+})
+
+describe('live evidence supersedes the file-level unknown', () => {
+  it('drops the unreadable-linger finding once a live reading answers it', () => {
+    const findings = auditSupervisorServices({
+      files: [file({ scope: 'user' })],
+      expectedUserDataPath: ROOT,
+      evidence: { linger: { status: 'observed', value: true } }
+    })
+    const codes = findings.map((finding) => finding.code)
+    expect(codes).toContain('linger_enabled')
+    expect(codes).not.toContain('linger_unverified')
+  })
+
+  it('keeps it when there is no evidence at all', () => {
+    expect(codes([file({ scope: 'user' })])).toContain('linger_unverified')
   })
 })
