@@ -28,6 +28,7 @@ import {
   observeExecTarget,
   observeJournal
 } from './supervisor-host-observations'
+import { auditDaemonSocketPathBudget } from './supervisor-daemon-socket-budget'
 import type { ProbeTarget } from '../../shared/supervisor-service-probe'
 import {
   ORCAD_LAUNCHD_LABEL,
@@ -298,6 +299,12 @@ export async function collectDoctorFindings(
     expectedUserDataPath,
     evidence
   })
+  // Why unconditionally, and never gated by --no-probe: it is arithmetic on a path. Its whole
+  // value is answering before an operator commits to a host, which is when nothing is running
+  // to probe. `files[0]` only when it is the only one, matching the rule above.
+  findings.push(
+    auditDaemonSocketPathBudget(files.length === 1 ? files[0] : undefined, expectedUserDataPath)
+  )
   // Why say so: a silently file-only report looks identical to one where every probe
   // happened to come back clean.
   if (!probing && files.length > 0) {
