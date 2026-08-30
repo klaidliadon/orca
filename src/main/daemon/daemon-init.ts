@@ -612,7 +612,7 @@ function createOutOfProcessLauncher(
           stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
           // Why: run the byte-identical relocated Orca.exe so the image path sits outside the updater's kill zone.
           ...(relocatedHost ? { execPath: relocatedHost.execPath } : {}),
-          // Why: run the fork as plain Node so Electron's GPU/display init can't interfere with node-pty's posix_spawn of the spawn-helper.
+          // Why: run the fork as plain Node so Electron's GPU/display init can't interfere with node-pty's PTY spawn (via spawn-helper on macOS, forked directly elsewhere).
           env: {
             ...process.env,
             ELECTRON_RUN_AS_NODE: '1',
