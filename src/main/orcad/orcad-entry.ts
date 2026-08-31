@@ -32,6 +32,11 @@ import {
 
 let runOrcadQuitHandlers = (): void => {}
 
+// Why module scope, like the quit handlers above: the server is started deep inside
+// `startOrcadRuntime`, and the launch failure path that must undo it runs in `startOrcad`,
+// which never imports it.
+let stopOrcadAgentHookServer = (): void => {}
+
 function createNodeAppEnvironment(): AppEnvironment {
   const quitHandlers: (() => void)[] = []
   // The main signal handler awaits runtime and browser teardown before process.exit.
@@ -120,6 +125,7 @@ export async function startOrcad(options: OrcadOptions = {}): Promise<OrcadHandl
   try {
     return await startOrcadRuntime(options, browserProvider, instanceLock)
   } catch (error) {
+    stopOrcadAgentHookServer()
     await browserProvider?.stop()
     setRuntimeBrowserCommandsFactory(null)
     runOrcadQuitHandlers()
@@ -186,6 +192,10 @@ async function startOrcadRuntime(
   if (isAgentStatusHooksEnabled(store.getSettings())) {
     try {
       await agentHookServer.start({ env: 'production', userDataPath: runtimeUserDataPath })
+      // Why arm it here and not on the way out: a later startup step throwing leaves the
+      // listener bound, and start() returns early while `this.server` is set — so the next
+      // attempt in the same process would silently reuse this one's token and endpoint file.
+      stopOrcadAgentHookServer = () => agentHookServer.stop()
     } catch (error) {
       console.error(
         `[orcad] agent hook server failed to start; agent chat will not render: ${
@@ -215,7 +225,33 @@ async function startOrcadRuntime(
     // Why 'blocked': `'openable'` means a desktop window can be opened here, which is
     // what powers serve→desktop promotion. A Node host can never do that, and the
     // constructor's default would advertise it.
-    getDesktopWindowStatus: () => 'blocked'
+    getDesktopWindowStatus: () => 'blocked',
+    // Why these seven as well as start(): the server above is only the write path. Unwired,
+    // the rows it collects reach nothing — `getHookRowsForPane` answers [] for every pane so
+    // published tabs carry no `providerSession.transcriptPath` (the address native chat
+    // resolves a transcript by), and `hasProviderSessionObservationSource()` answers false so
+    // structured Claude resume refuses with "could not prove its fresh provider session".
+    // Same delegations the desktop host makes; ungated for the same reason it is — a server
+    // that never started answers empty, which is the same answer a second gate would give.
+    onTerminalAgentStatus: (event) => agentHookServer.ingestTerminalStatus(event),
+    // Why filtered: resume-identity rows are not running agents and must not read as live.
+    getAgentStatusSnapshot: () =>
+      agentHookServer.getStatusSnapshot().filter((entry) => entry.providerSessionOnly !== true),
+    // Why unfiltered here: those same rows are what carries the provider session.
+    getAgentProviderSessionSnapshot: () => agentHookServer.getStatusSnapshot(),
+    getAgentProviderSessionRowsForPane: (paneKey) =>
+      agentHookServer.getStatusSnapshotForPane(paneKey),
+    attestAgentHookCompatibilityAuthority: (candidate) =>
+      agentHookServer.attestCompatibilityAuthority(candidate),
+    // Why paired with attest: a pane whose launch identity is torn down must stop attesting,
+    // or its evidence survives to vouch for a later claim on the same key.
+    retireAgentHookCompatibilityAuthority: (paneKey) =>
+      agentHookServer.retirePaneAuthority(paneKey),
+    reconcileAgentStatusForEndedProcess: (paneKeys) => {
+      agentHookServer.reconcileEndedProcessForPaneKeys(paneKeys)
+    }
+    // No buildAgentHookPtyEnv: `host-env/assembly.ts` reads the same singleton directly, so
+    // wiring it here would add a second source for the env this host already gets.
   })
 
   // Why the headless entry point rather than registerPtyHandlers directly: this is the
@@ -316,7 +352,7 @@ async function startOrcadRuntime(
         await stopOrcadDaemon()
         // Why no unlink of the endpoint file: stop() leaves it deliberately — a stale file
         // matches the hook's fail-open behaviour and avoids a TOCTOU race with a concurrent Orca.
-        await agentHookServer.stop()
+        agentHookServer.stop()
         await browserProvider?.stop()
         setRuntimeBrowserCommandsFactory(null)
         runOrcadQuitHandlers()
