@@ -43,7 +43,7 @@ function auditUnitState(evidence: SupervisorEvidence): SupervisorFinding | null 
       message:
         'The file is on disk but the supervisor has never loaded it, so nothing is ' +
         'supervising orcad. Placing the file is not the last step.',
-      remedy: 'systemctl daemon-reload, then systemctl enable --now <unit>'
+      remedy: 'systemctl daemon-reload, then systemctl enable <unit>, then systemctl start <unit>'
     }
   }
   if (load === 'masked') {
