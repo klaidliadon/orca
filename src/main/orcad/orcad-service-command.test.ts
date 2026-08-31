@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import process from 'node:process'
+import { afterAll, describe, expect, it } from 'vitest'
 import {
+  collectServiceFiles,
   formatFindings,
   inferScopeFromPath,
   isServiceCommand,
@@ -118,5 +123,55 @@ describe('finding output', () => {
       { code: 'user_data_agrees', severity: 'ok', message: 'Root pinned.' }
     ])
     expect(text).toBe('[CRITICAL] No KillMode.\n         Regenerate.\n[OK] Root pinned.')
+  })
+})
+
+/**
+ * Presence and readability are different answers, and `existsSync` only reports the first:
+ * it succeeds on a file the caller cannot open, because a traversable parent is enough.
+ *
+ * These run only as non-root by necessity, not by preference — uid 0 ignores the mode bits,
+ * so the unreadable file simply reads fine and the case cannot exist. Exercised as uid 1026
+ * on the Synology box where the original was found.
+ */
+describe('discovery separates unreadable from absent', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'orcad-discovery-'))
+  afterAll(() => {
+    try {
+      chmodSync(join(dir, 'orcad.service'), 0o600)
+    } catch {
+      // Already gone, or never created because the test was skipped.
+    }
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it.runIf(process.getuid?.() !== 0)('records a present-but-unreadable candidate', () => {
+    const path = join(dir, 'orcad.service')
+    writeFileSync(path, '[Service]\nExecStart=/bin/true\n', 'utf8')
+    chmodSync(path, 0o000)
+
+    const { files, unreadable } = collectServiceFiles('systemd', [path])
+
+    expect(files.map((f) => f.path)).not.toContain(path)
+    expect(unreadable.map((u) => u.path)).toContain(path)
+    expect(unreadable.find((u) => u.path === path)?.reason).toBe('EACCES')
+  })
+
+  // Scoped to the path under test rather than to the whole result: discovery also scans the
+  // conventional locations, so a host with a real orcad.service installed would otherwise
+  // fail these on its own installation.
+  it('reports a path that truly is not there as neither found nor unreadable', () => {
+    const path = join(dir, 'absent.service')
+    const { files, unreadable } = collectServiceFiles('systemd', [path])
+    expect(files.map((f) => f.path)).not.toContain(path)
+    expect(unreadable.map((u) => u.path)).not.toContain(path)
+  })
+
+  it('reads a candidate it can open', () => {
+    const path = join(dir, 'readable.service')
+    writeFileSync(path, '[Service]\nKillMode=process\n', 'utf8')
+    const { files, unreadable } = collectServiceFiles('systemd', [path])
+    expect(files.map((f) => f.path)).toContain(path)
+    expect(unreadable.map((u) => u.path)).not.toContain(path)
   })
 })
