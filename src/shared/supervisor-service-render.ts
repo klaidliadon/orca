@@ -260,16 +260,24 @@ export function supervisorInstallHint(config: SupervisorServiceConfig): {
   return config.scope === 'system'
     ? {
         path: `/etc/systemd/system/${ORCAD_SYSTEMD_UNIT_NAME}`,
+        // Why two commands and not `enable --now`: `--now` arrived in systemd 220, and the
+        // hint is the operator's next action, so it may only name mechanisms that exist on
+        // the host it is printed on. On systemd 219 (Synology DSM) the combined form fails
+        // with `unrecognized option '--now'` — and because the whole command fails, the unit
+        // is left installed but neither enabled nor started, which reads as a successful
+        // install until the next reboot. `enable` then `start` works on every version.
         commands: [
           'sudo systemctl daemon-reload',
-          `sudo systemctl enable --now ${ORCAD_SYSTEMD_UNIT_NAME}`
+          `sudo systemctl enable ${ORCAD_SYSTEMD_UNIT_NAME}`,
+          `sudo systemctl start ${ORCAD_SYSTEMD_UNIT_NAME}`
         ]
       }
     : {
         path: `~/.config/systemd/user/${ORCAD_SYSTEMD_UNIT_NAME}`,
         commands: [
           'systemctl --user daemon-reload',
-          `systemctl --user enable --now ${ORCAD_SYSTEMD_UNIT_NAME}`,
+          `systemctl --user enable ${ORCAD_SYSTEMD_UNIT_NAME}`,
+          `systemctl --user start ${ORCAD_SYSTEMD_UNIT_NAME}`,
           // Without lingering the service dies with the SSH session that installed it.
           'sudo loginctl enable-linger "$USER"'
         ]

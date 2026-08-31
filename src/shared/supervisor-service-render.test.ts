@@ -115,6 +115,29 @@ describe('scope', () => {
     const hint = supervisorInstallHint(config({ scope: 'user' }))
     expect(hint.commands.join('\n')).toContain('enable-linger')
   })
+
+  // `--now` arrived in systemd 220. The hint is the operator's next action, so naming a
+  // flag their systemd does not have leaves the unit installed but neither enabled nor
+  // started — indistinguishable from a successful install until the next reboot.
+  // Measured on Synology DSM (systemd 219): `unrecognized option '--now'`.
+  it.each(['system', 'user'] as const)(
+    'never tells a %s systemd install to use `--now`',
+    (scope) => {
+      const commands = supervisorInstallHint(config({ scope })).commands.join('\n')
+      expect(commands).not.toContain('--now')
+      expect(commands).toContain('systemctl')
+    }
+  )
+
+  it.each(['system', 'user'] as const)(
+    'enables AND starts a %s systemd unit, since neither alone is enough',
+    (scope) => {
+      const commands = supervisorInstallHint(config({ scope })).commands
+      // enable without start leaves it dead until reboot; start without enable dies at one.
+      expect(commands.some((c) => /systemctl.* enable /.test(c))).toBe(true)
+      expect(commands.some((c) => /systemctl.* start /.test(c))).toBe(true)
+    }
+  )
 })
 
 describe('platform resolution', () => {
