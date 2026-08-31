@@ -346,7 +346,7 @@ async function startOrcadRuntime(
         await stopOrcadDaemon()
         // Why no unlink of the endpoint file: stop() leaves it deliberately — a stale file
         // matches the hook's fail-open behaviour and avoids a TOCTOU race with a concurrent Orca.
-        await agentHookServer.stop()
+        agentHookServer.stop()
         await browserProvider?.stop()
         setRuntimeBrowserCommandsFactory(null)
         runOrcadQuitHandlers()
