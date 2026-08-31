@@ -25,7 +25,17 @@ below exists to keep that true.
 **Consequence for supervision:** orcad's shutdown path calls `disconnectDaemon()`, never
 `shutdownDaemon()`. A supervisor that reaps orcad's whole process group — systemd's
 `KillMode=control-group` — kills the daemon too and turns every restart back into data loss.
-Use `KillMode=mixed` (the default) or `process`, and never `--send-sigkill` on the group.
+Use `KillMode=process`, and never `--send-sigkill` on the group.
+
+`mixed` is **not** safe here, though this document used to say it was. It SIGTERMs the main
+process and then SIGKILLs everything still in the control group, and the detached daemon is
+in that control group — `setsid()` escapes the process group, not the cgroup. Measured on a
+Synology NAS running systemd 219: under `mixed`, a `systemctl restart` destroyed the daemon,
+its shell, the session and its scrollback; the identical unit under `process` kept all four.
+
+The cost of `process` is real and accepted: systemd no longer reaps what the runtime leaves
+behind. orcad owns that lifecycle through the daemon pid-record it adopts on the next start,
+and a supervisor that cleans up is exactly what breaks the guarantee above.
 
 ## Bind policy
 
