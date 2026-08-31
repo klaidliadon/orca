@@ -25,7 +25,8 @@ below exists to keep that true.
 **Consequence for supervision:** orcad's shutdown path calls `disconnectDaemon()`, never
 `shutdownDaemon()`. A supervisor that reaps orcad's whole process group — systemd's
 `KillMode=control-group` — kills the daemon too and turns every restart back into data loss.
-Use `KillMode=process`, and never `--send-sigkill` on the group.
+Use `KillMode=process` on the unit that supervises orcad, and never `--send-sigkill` on the
+group.
 
 `mixed` is **not** safe here, though this document used to say it was. It SIGTERMs the main
 process and then SIGKILLs everything still in the control group, and the detached daemon is
@@ -36,6 +37,14 @@ its shell, the session and its scrollback; the identical unit under `process` ke
 The cost of `process` is real and accepted: systemd no longer reaps what the runtime leaves
 behind. orcad owns that lifecycle through the daemon pid-record it adopts on the next start,
 and a supervisor that cleans up is exactly what breaks the guarantee above.
+
+**This rule is scoped to the orcad unit.** `orca serve` is a different deployment with the
+opposite requirement: its reliability gate demands that a stop leave no listener, descendant
+or Xvfb residue behind, so `docs/reference/headless-linux-server.md` documents
+`KillMode=mixed` and `config/scripts/headless-serve-shutdown-workflow.test.mjs` asserts that
+unit keeps it. The cgroup SIGKILL that costs orcad its daemon is a wanted backstop there.
+Whether a daemon-backed session under `orca serve` is lost the same way is untested, and is
+deliberately not answered here.
 
 ## Bind policy
 
