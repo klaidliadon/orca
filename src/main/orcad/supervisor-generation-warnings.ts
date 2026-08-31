@@ -1,14 +1,19 @@
 /**
- * The two things `orcad --print-service` can see about this host that the generated file
- * cannot say for itself.
+ * What `orcad --print-service` can see about this host that the generated file cannot say
+ * for itself.
  *
- * Both are warnings rather than refusals: a definition is often generated on one host to be
+ * All warnings rather than refusals: a definition is often generated on one host to be
  * installed on another, so an unusable local scope is not proof the file is wrong.
  */
 import { accessSync, constants, existsSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import process from 'node:process'
 import { runProcess } from '../../shared/child-process/run-process'
+import {
+  checkDaemonSocketPathBudget,
+  DAEMON_SOCKET_PATH_REMEDY,
+  describeDaemonSocketPathOverflow
+} from '../daemon/daemon-runtime-paths'
 
 /**
  * Version-scoped interpreter prefixes: a `brew upgrade node`, `nvm install`, or `mise use`
@@ -67,6 +72,25 @@ export function interpreterOnDiskWarning(nodePath: string, wasChosen: boolean): 
     )
   }
   return null
+}
+
+/**
+ * The doctor calls an over-budget data root `critical` — the daemon cannot bind its socket,
+ * so the service starts and has no terminals. But it can only say so once the unit is
+ * installed and someone runs `--doctor`. print-service holds the same path at the moment
+ * the operator is watching, and said nothing: it would emit a unit pinning a root whose
+ * socket needs 113 of 108 available bytes, followed by a copy-paste install hint.
+ *
+ * Same generator/doctor asymmetry that let an unvalidated `--node` through, and warned
+ * about for the same reason: the root may be short enough on the host this file is
+ * destined for.
+ */
+export function socketPathBudgetWarning(userDataPath: string): string | null {
+  const budget = checkDaemonSocketPathBudget(userDataPath)
+  if (budget.fits) {
+    return null
+  }
+  return `Warning: ${describeDaemonSocketPathOverflow(budget)} ${DAEMON_SOCKET_PATH_REMEDY}`
 }
 
 /**

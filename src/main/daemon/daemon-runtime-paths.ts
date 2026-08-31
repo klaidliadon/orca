@@ -88,5 +88,12 @@ export function describeDaemonSocketPathOverflow(budget: UnixSocketPathBudget): 
   )
 }
 
+/**
+ * Names only mechanisms that exist. It previously offered `--user-data <path>`, which orcad
+ * does not accept and — because the service commands ignored unrecognised flags — did not
+ * reject either: an operator following this advice got exit 0 and an `[OK] socket path fits`
+ * measured against the shell's own root, and would reasonably conclude it was fixed.
+ */
 export const DAEMON_SOCKET_PATH_REMEDY =
-  'Move the data root to a shorter path: --user-data <path>, or ORCA_USER_DATA.'
+  'Move the data root to a shorter path: set ORCA_USER_DATA, and regenerate the service ' +
+  'definition with it set if one is installed.'

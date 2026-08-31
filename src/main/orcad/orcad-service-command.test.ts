@@ -62,6 +62,31 @@ describe('argument parsing', () => {
     expect(() => parseServiceCommandArgs(['--node'])).toThrow(/--node/)
     expect(() => parseServiceCommandArgs(['--service-path'])).toThrow(/--service-path/)
   })
+
+  // Silently dropping these is how `--user-data` came to be recommended by the tool's own
+  // socket-budget remedy: an operator ran it, got exit 0 and an [OK], and had changed
+  // nothing. `--json` is the same shape — real on `orca supervisor doctor`, absent here.
+  it('rejects a flag it does not implement instead of ignoring it', () => {
+    expect(() => parseServiceCommandArgs(['--doctor', '--user-data', '/tmp/x'])).toThrow(
+      /Unknown argument: --user-data/
+    )
+    expect(() => parseServiceCommandArgs(['--doctor', '--json'])).toThrow(
+      /Unknown argument: --json/
+    )
+  })
+
+  // The mode flags travel in the same argv this parses, so they are not "unknown".
+  it('accepts the mode flags it is invoked through', () => {
+    expect(() => parseServiceCommandArgs(['--print-service'])).not.toThrow()
+    expect(() => parseServiceCommandArgs(['--doctor', '--no-probe'])).not.toThrow()
+  })
+
+  // A value consumed by its flag must not then be re-read as an argument.
+  it('does not mistake a flag value for an unknown flag', () => {
+    expect(() =>
+      parseServiceCommandArgs(['--doctor', '--service-path', '/tmp/--json.service'])
+    ).not.toThrow()
+  })
 })
 
 describe('scope inference', () => {
