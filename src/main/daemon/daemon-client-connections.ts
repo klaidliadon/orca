@@ -35,6 +35,20 @@ type DaemonClientConnectionOptions = {
   onStreamDisconnected: (clientId: string) => void
 }
 
+/**
+ * The minimum a control frame must carry to be routable: an `id` the reply can be
+ * correlated against. Anything else is undispatchable, not merely unknown — an unknown
+ * method still gets an error reply, but only if we know where to send it.
+ */
+export function isDispatchableRequest(message: unknown): message is DaemonRequest {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    typeof (message as { id?: unknown }).id === 'string' &&
+    (message as { id: string }).id.length > 0
+  )
+}
+
 export class DaemonClientConnections {
   private readonly clients = new Map<string, ConnectedDaemonClient>()
   private readonly transportSockets = new Set<Socket>()
@@ -197,7 +211,21 @@ export class DaemonClientConnections {
   private setupControlParser(socket: Socket, clientId: string): void {
     const decoder = new StringDecoder('utf8')
     const parser = createNdjsonParser(
-      (message) => this.options.onControlRequest(socket, clientId, message as DaemonRequest),
+      (message) => {
+        // `as DaemonRequest` asserted a shape nothing had checked: the parser hands through
+        // any parsed JSON, `null` included. One frame without a usable `id` was enough to
+        // take the daemon down — and the daemon is the process kept alive precisely so
+        // terminals outlive everything else. Dropping is the only correlatable answer,
+        // since a reply needs the id the frame did not carry.
+        if (!isDispatchableRequest(message)) {
+          this.options.log.log('control-frame-dropped', {
+            clientId,
+            reason: 'missing-or-invalid-id'
+          })
+          return
+        }
+        this.options.onControlRequest(socket, clientId, message)
+      },
       () => {}
     )
     socket.removeAllListeners('data')
