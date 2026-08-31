@@ -6,6 +6,7 @@ import process from 'node:process'
 import {
   interpreterOnDiskWarning,
   resolveRealPath,
+  socketPathBudgetWarning,
   versionScopedInterpreterWarning
 } from './supervisor-generation-warnings'
 
@@ -85,5 +86,30 @@ describe('--node validation', () => {
   // process.execPath is tautologically on disk, so checking it would only add noise.
   it('says nothing about the default interpreter', () => {
     expect(interpreterOnDiskWarning('/nonexistent/node', false)).toBeNull()
+  })
+})
+
+describe('socket path budget at generation time', () => {
+  // The doctor already calls this critical, but only once the unit is installed. Found on
+  // a Synology NAS: print-service emitted a unit pinning a 90-byte root — 113 of 108
+  // socket bytes — and then printed the install hint, with nothing on stderr.
+  it('warns when the pinned root cannot hold a daemon socket', () => {
+    const overBudget = `/volume2/homes/master/.orca-sudotest/${'a'.repeat(53)}`
+    const warning = socketPathBudgetWarning(overBudget)
+    expect(warning).not.toBeNull()
+    expect(warning).toMatch(/\b108\b/)
+    expect(warning).toContain(overBudget)
+  })
+
+  it('stays quiet for a root that fits', () => {
+    expect(socketPathBudgetWarning('/volume2/homes/master/.orca')).toBeNull()
+  })
+
+  // The remedy is copied into the operator's next action, so it may name only mechanisms
+  // that exist. `--user-data` was neither accepted nor rejected by orcad.
+  it('recommends no flag that orcad does not accept', () => {
+    const warning = socketPathBudgetWarning(`/tmp/${'a'.repeat(120)}`)
+    expect(warning).toContain('ORCA_USER_DATA')
+    expect(warning).not.toContain('--user-data')
   })
 })

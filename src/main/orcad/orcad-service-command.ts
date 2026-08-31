@@ -44,6 +44,7 @@ import { resolveUserDataPath } from './orcad-app-paths'
 import {
   interpreterOnDiskWarning,
   resolveRealPath,
+  socketPathBudgetWarning,
   userScopeUnavailableWarning,
   versionScopedInterpreterWarning
 } from './supervisor-generation-warnings'
@@ -68,6 +69,15 @@ type ServiceCommandOptions = {
 /**
  * Deliberately separate from `parseArgs`: that one throws on any unknown argument and is
  * reached only from `main()`, which is past the point where a port gets bound.
+ *
+ * It rejects unknown arguments for the same reason `parseArgs` does. Being separate was
+ * never meant to make it permissive, but it silently dropped anything it did not
+ * recognise, and two flags an operator would plausibly reach for went nowhere:
+ * `--user-data`, which this tool's own socket-budget remedy used to recommend, and
+ * `--json`, which exists on `orca supervisor doctor` but not here — the tarball
+ * deployment this command exists for has no `orca` CLI, so on those hosts the JSON form
+ * is unreachable and the flag asking for it was swallowed. Erroring is what makes that
+ * discoverable.
  */
 export function parseServiceCommandArgs(argv: string[]): ServiceCommandOptions {
   const options: ServiceCommandOptions = { scope: 'system', port: DEFAULT_PORT, bind: '127.0.0.1' }
@@ -112,6 +122,9 @@ export function parseServiceCommandArgs(argv: string[]): ServiceCommandOptions {
       }
       options.bind = value
       i += 1
+    } else if (argv[i] !== PRINT_SERVICE_FLAG && argv[i] !== DOCTOR_FLAG) {
+      // The mode flags are part of the argv this is handed, so they are not "unknown".
+      throw new Error(`Unknown argument: ${argv[i]}`)
     }
   }
   return options
@@ -153,6 +166,8 @@ export async function printService(argv: string[]): Promise<number> {
   // Why before the install block and unindented: the hint is a copy-paste unit, and a
   // warning folded into it reads as part of the instructions rather than a caveat on them.
   const warnings = [
+    // First because it is the only one of these that means the service cannot work at all.
+    socketPathBudgetWarning(config.userDataPath),
     versionScopedInterpreterWarning(nodePath),
     interpreterOnDiskWarning(nodePath, options.nodePath !== undefined),
     ...(platform === 'systemd' && options.scope === 'user'
