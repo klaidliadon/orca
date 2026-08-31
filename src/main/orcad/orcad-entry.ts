@@ -215,7 +215,30 @@ async function startOrcadRuntime(
     // Why 'blocked': `'openable'` means a desktop window can be opened here, which is
     // what powers serve→desktop promotion. A Node host can never do that, and the
     // constructor's default would advertise it.
-    getDesktopWindowStatus: () => 'blocked'
+    getDesktopWindowStatus: () => 'blocked',
+    // Why these six: without them the runtime holds hook data it cannot read. The mobile tab
+    // projection resolves a pane's hook row through `getAgentProviderSessionRowsForPane` and
+    // then `getAgentProviderSessionSnapshot`; with neither supplied both answer empty, so
+    // `hookAgentStatus` is undefined for every pane and the merge that would attach
+    // `providerSession` short-circuits. The effect is precise: agent status renders, and native
+    // chat has no transcript address, so the chat view stays blank while the terminal works.
+    //
+    // The filter on the first is not cosmetic — it hides resume-identity rows from live-agent
+    // views, while the second deliberately keeps them, because those rows carry the provider
+    // session native chat addresses transcripts by. Two accessors over one snapshot, and
+    // copying only one fixes chat while breaking the live-agent rows.
+    getAgentStatusSnapshot: () =>
+      agentHookServer.getStatusSnapshot().filter((entry) => entry.providerSessionOnly !== true),
+    getAgentProviderSessionSnapshot: () => agentHookServer.getStatusSnapshot(),
+    getAgentProviderSessionRowsForPane: (paneKey) =>
+      agentHookServer.getStatusSnapshotForPane(paneKey),
+    attestAgentHookCompatibilityAuthority: (candidate) =>
+      agentHookServer.attestCompatibilityAuthority(candidate),
+    retireAgentHookCompatibilityAuthority: (paneKey) =>
+      agentHookServer.retirePaneAuthority(paneKey),
+    reconcileAgentStatusForEndedProcess: (paneKeys) => {
+      agentHookServer.reconcileEndedProcessForPaneKeys(paneKeys)
+    }
   })
 
   // Why the headless entry point rather than registerPtyHandlers directly: this is the
