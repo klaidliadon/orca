@@ -280,3 +280,62 @@ describe('live evidence supersedes the file-level unknown', () => {
     expect(codes([file({ scope: 'user' })])).toContain('linger_unverified')
   })
 })
+
+/**
+ * An unreadable definition and an absent one demand opposite actions, so they must not
+ * share a finding. `existsSync` succeeds on a file the caller cannot open, which is how a
+ * unit installed mode 600 — what `sudo tee` writes under root's 0077 umask on Synology DSM
+ * — used to be reported as "no orcad service definition found in the conventional
+ * locations", with `--print-service` as the remedy: redo an install that had succeeded.
+ */
+describe('a definition that exists but cannot be read', () => {
+  const unreadable = [{ path: '/etc/systemd/system/orcad.service', reason: 'EACCES' }]
+
+  it('is not reported as an absent install', () => {
+    const found = auditSupervisorServices({ files: [], expectedUserDataPath: ROOT, unreadable })
+    const codes = found.map((f) => f.code)
+    expect(codes).toContain('service_definition_unreadable')
+    expect(codes).not.toContain('no_service_found')
+  })
+
+  it('never tells the operator to print a unit they already installed', () => {
+    const [finding] = auditSupervisorServices({
+      files: [],
+      expectedUserDataPath: ROOT,
+      unreadable
+    })
+    expect(finding.remedy).not.toContain('--print-service')
+    expect(finding.remedy).toContain('/etc/systemd/system/orcad.service')
+  })
+
+  it('names the path and the errno, since neither alone identifies the problem', () => {
+    const [finding] = auditSupervisorServices({
+      files: [],
+      expectedUserDataPath: ROOT,
+      unreadable
+    })
+    expect(finding.message).toContain('/etc/systemd/system/orcad.service')
+    expect(finding.message).toContain('EACCES')
+  })
+
+  // An unreadable second file is exactly the duplicate auditDuplicates exists to catch,
+  // and it cannot see this one — so silence here would hide the higher-severity finding.
+  it('is still reported when another definition did read cleanly', () => {
+    const codes = auditSupervisorServices({
+      files: [file()],
+      expectedUserDataPath: ROOT,
+      unreadable: [{ path: '/usr/lib/systemd/system/orcad.service', reason: 'EACCES' }]
+    }).map((f) => f.code)
+    expect(codes).toContain('service_definition_unreadable')
+  })
+
+  it('still reports a genuinely absent install as absent (negative control)', () => {
+    const codes = auditSupervisorServices({
+      files: [],
+      expectedUserDataPath: ROOT,
+      unreadable: []
+    }).map((f) => f.code)
+    expect(codes).toContain('no_service_found')
+    expect(codes).not.toContain('service_definition_unreadable')
+  })
+})

@@ -214,36 +214,65 @@ export function inferScopeFromPath(path: string): SupervisorScope {
   return /\/systemd\/user\/|\/LaunchAgents\//i.test(normalized) ? 'user' : 'system'
 }
 
+/** A candidate that is present but could not be read. Never folded into "not found". */
+export type UnreadableServiceFile = { path: string; reason: string }
+
+export type ServiceFileDiscovery = {
+  files: SupervisorServiceFile[]
+  unreadable: UnreadableServiceFile[]
+}
+
 /**
  * Reads every candidate rather than stopping at the first: two definitions targeting one
  * data root is itself the highest-severity finding, and stopping early would hide it.
+ *
+ * Presence and readability are separated deliberately. `existsSync` succeeds on a file the
+ * caller cannot open — a traversable directory is enough — so a unit installed with a
+ * restrictive mode used to fall into the same catch as one that was never there, and the
+ * audit then told the operator to run `--print-service`: to redo an install that had
+ * already succeeded. Observed on Synology DSM, where root's umask is 0077 and
+ * `sudo tee` therefore writes /etc/systemd/system/orcad.service mode 600 while every unit
+ * shipped with the OS is 644.
  */
 export function collectServiceFiles(
   platform: SupervisorPlatform,
   extraPaths: string[] = []
-): SupervisorServiceFile[] {
+): ServiceFileDiscovery {
   const candidates = [
     ...candidateServicePaths(platform),
     ...extraPaths.map((path) => ({ path, scope: inferScopeFromPath(path) }))
   ]
   const files: SupervisorServiceFile[] = []
+  const unreadable: UnreadableServiceFile[] = []
   for (const candidate of candidates) {
+    let present = false
     try {
-      if (!existsSync(candidate.path) || !statSync(candidate.path).isFile()) {
-        continue
-      }
+      present = existsSync(candidate.path) && statSync(candidate.path).isFile()
+    } catch (error) {
+      // Cannot even stat it: that is a permission answer about a path, not an absence.
+      unreadable.push({ path: candidate.path, reason: errnoOf(error) })
+      continue
+    }
+    if (!present) {
+      continue
+    }
+    try {
       files.push({
         path: candidate.path,
         text: readFileSync(candidate.path, 'utf8'),
         platform,
         scope: candidate.scope
       })
-    } catch {
-      // An unreadable candidate is not an absent one, but nothing here can prove which;
-      // `auditSupervisorServices` reports "none found" as unverifiable rather than clean.
+    } catch (error) {
+      unreadable.push({ path: candidate.path, reason: errnoOf(error) })
     }
   }
-  return files
+  return { files, unreadable }
+}
+
+function errnoOf(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | null)?.code
+  return typeof code === 'string' ? code : 'unknown error'
 }
 
 const SEVERITY_LABEL = {
@@ -289,7 +318,10 @@ export async function collectDoctorFindings(
 ): Promise<{ findings: SupervisorFinding[]; code: number }> {
   const platform = resolveSupervisorPlatform(process.platform)
   const options = parseServiceCommandArgs(argv)
-  const files = collectServiceFiles(platform, options.servicePath ? [options.servicePath] : [])
+  const { files, unreadable } = collectServiceFiles(
+    platform,
+    options.servicePath ? [options.servicePath] : []
+  )
   // Only probe one definition: with two, every result would be ambiguous about which it
   // described, and the duplicate finding is the story anyway.
   const probing = files.length === 1 && !options.noProbe
@@ -312,7 +344,8 @@ export async function collectDoctorFindings(
   const findings = auditSupervisorServices({
     files,
     expectedUserDataPath,
-    evidence
+    evidence,
+    unreadable
   })
   // Why unconditionally, and never gated by --no-probe: it is arithmetic on a path. Its whole
   // value is answering before an operator commits to a host, which is when nothing is running

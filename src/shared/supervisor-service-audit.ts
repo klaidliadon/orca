@@ -44,6 +44,8 @@ export type SupervisorAuditInput = {
   expectedUserDataPath: string
   /** Absent is legal: with no evidence this is exactly the file-only audit. */
   evidence?: SupervisorEvidence
+  /** Candidates that are present but could not be read. Not the same as none found. */
+  unreadable?: { path: string; reason: string }[]
 }
 
 /**
@@ -261,18 +263,47 @@ function auditDuplicates(input: SupervisorAuditInput): SupervisorFinding | null 
   }
 }
 
+/**
+ * A definition that exists but cannot be read.
+ *
+ * Kept distinct from `no_service_found` because the two demand opposite actions: absence
+ * says install one, unreadable says you already did and this process cannot see it. Telling
+ * an operator to run `--print-service` against an installed unit invites them to redo work
+ * that succeeded, and the reinstall does not fix the permission either.
+ */
+function auditUnreadable(unreadable: { path: string; reason: string }[]): SupervisorFinding {
+  const named = unreadable.map((u) => `${u.path} (${u.reason})`).join('; ')
+  return {
+    code: 'service_definition_unreadable',
+    severity: 'unverifiable',
+    message:
+      `A service definition is present but could not be read — ${named}. It exists, so ` +
+      'this is not a missing install; nothing here can say whether its contents are ' +
+      'correct.',
+    remedy: `Re-run as root, or make it readable: sudo chmod 644 ${unreadable[0].path}`
+  }
+}
+
 export function auditSupervisorServices(input: SupervisorAuditInput): SupervisorFinding[] {
+  const unreadable = input.unreadable ?? []
   if (input.files.length === 0) {
     return [
-      {
-        code: 'no_service_found',
-        severity: 'unverifiable',
-        message: 'No orcad service definition found in the conventional locations.',
-        remedy: 'orcad --print-service'
-      }
+      unreadable.length > 0
+        ? auditUnreadable(unreadable)
+        : {
+            code: 'no_service_found',
+            severity: 'unverifiable',
+            message: 'No orcad service definition found in the conventional locations.',
+            remedy: 'orcad --print-service'
+          }
     ]
   }
   let findings: SupervisorFinding[] = []
+  // Reported even when other definitions read fine: an unreadable second file is exactly
+  // the duplicate that `auditDuplicates` exists to catch, and it cannot see this one.
+  if (unreadable.length > 0) {
+    findings.push(auditUnreadable(unreadable))
+  }
   const duplicates = auditDuplicates(input)
   if (duplicates) {
     findings.push(duplicates)
