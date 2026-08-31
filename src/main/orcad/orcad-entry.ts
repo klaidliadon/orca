@@ -152,6 +152,8 @@ async function startOrcadRuntime(
     await import('../orca-profiles/profile-index-store')
   const { initSshHostKeyStoreFile } = await import('../ssh/ssh-host-key-store')
   const { startOrcadDaemon, stopOrcadDaemon } = await import('./orcad-daemon-supervision')
+  const { agentHookServer } = await import('../agent-hooks/server')
+  const { isAgentStatusHooksEnabled } = await import('../agent-hooks/managed-agent-hook-controls')
   const { daemonOwnsFreshPersistentPtys } = await import('../daemon/daemon-init')
   const { collectOrcadHealth } = await import('./orcad-health')
 
@@ -167,6 +169,38 @@ async function startOrcadRuntime(
   // Why: every SSH connect consults this sidecar. Left unbound it reports nothing trusted,
   // which is safe but silently discards accept records on every launch.
   initSshHostKeyStoreFile(profile.dataFile)
+
+  // Why before the daemon: `host-env/assembly.ts` folds `agentHookServer.buildPtyEnv()` into
+  // every PTY's environment from LIVE server state, and `buildPtyEnv()` returns {} while the
+  // port is 0. A terminal spawned before this — including one the daemon hands back on
+  // adoption — is frozen with no hook coordinates, so its agent never reports a session and
+  // the chat view has no transcript to render. The spawn path itself needs no change; it was
+  // already reading these.
+  //
+  // Why `userDataPath` is not optional: ORCA_AGENT_HOOK_ENDPOINT is set only when the endpoint
+  // file was written, and it is written only when start() received this path. The hook script
+  // returns at its first line on that exact variable, so omitting it yields four of the five
+  // vars and a hook that still does nothing — the same symptom, harder to find twice. The file
+  // matters more here than on the desktop: start() regenerates token and port every launch,
+  // while orcad's daemon deliberately outlives the runtime, so a surviving PTY carries stale
+  // coordinates that the hook repairs only by sourcing this file at invocation time.
+  //
+  // No endpointNamespace: that is for parallel dev worktrees, and namespacing would break the
+  // endpoint file's stability across exactly the restarts this host is built to survive.
+  //
+  // Fail open, matching `--serve`: hook callbacks are enrichment, so a loopback bind failure
+  // must not refuse a host whose terminals otherwise work.
+  if (isAgentStatusHooksEnabled(store.getSettings())) {
+    try {
+      await agentHookServer.start({ env: 'production', userDataPath: runtimeUserDataPath })
+    } catch (error) {
+      console.error(
+        `[orcad] agent hook server failed to start; agent chat will not render: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      )
+    }
+  }
 
   // Why before the runtime and the PTY handlers: `setLocalPtyProvider` installs the daemon
   // adapter as THE local provider, and the registry's contract is that it lands before
@@ -287,6 +321,9 @@ async function startOrcadRuntime(
         // orcad restart goes back to killing every running terminal. See
         // orcad-daemon-supervision.ts.
         await stopOrcadDaemon()
+        // Why no unlink of the endpoint file: stop() leaves it deliberately — a stale file
+        // matches the hook's fail-open behaviour and avoids a TOCTOU race with a concurrent Orca.
+        await agentHookServer.stop()
         await browserProvider?.stop()
         setRuntimeBrowserCommandsFactory(null)
         runOrcadQuitHandlers()
