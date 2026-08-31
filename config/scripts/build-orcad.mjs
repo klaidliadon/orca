@@ -286,20 +286,41 @@ async function smokeLoadWatcherChild() {
         child.kill('SIGKILL')
         resolve(`No 'subscribe-started' ack within 30s.\n${stderr.slice(0, 2000)}`)
       }, 30_000)
+      let settled = false
       const settle = (failure) => {
+        if (settled) {
+          return
+        }
+        settled = true
         clearTimeout(timer)
+        // Past the verdict the child's fate says nothing, so stop reading it as evidence
+        // and just reap it. Watching `exit` after this is what made a good build fail: the
+        // parent disconnects the instant it acks, a child that writes once more takes
+        // EPIPE on an unhandled 'error' and exits non-zero, and that was read as a load
+        // failure. It surfaces on slow hardware far more than on a fast one.
+        child.removeAllListeners('exit')
+        child.removeAllListeners('error')
+        if (child.connected) {
+          child.disconnect()
+        }
+        child.kill('SIGKILL')
         resolve(failure)
       }
       child.on('message', (message) => {
+        // The ack IS the verdict. It is emitted once the child's graph has resolved under
+        // plain Node, which is the only thing this gate claims to prove — deliberately
+        // before the native module is touched, so a build machine with no compiled
+        // @parcel/watcher still passes.
         if (message?.op === 'subscribe-started') {
-          child.disconnect()
+          settle(null)
         }
       })
       child.on('error', (error) => settle(`fork failed: ${error.message}`))
-      // Why exit and not disconnect: the child exits 0 on disconnect, so a non-zero code
-      // or a signal here is a load failure rather than a clean teardown.
+      // Only an exit BEFORE the ack is evidence: it means the graph never resolved.
       child.on('exit', (code, signal) =>
-        settle(code === 0 ? null : `exit code=${code} signal=${signal}\n${stderr.slice(0, 2000)}`)
+        settle(
+          `the child exited before acking: code=${code} signal=${signal}\n${stderr.slice(0, 2000)}`
+        )
       )
       child.send({ op: 'subscribe', id: 1, dir: probeDir, opts: {} })
     })
