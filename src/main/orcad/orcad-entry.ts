@@ -13,6 +13,7 @@
  */
 import process from 'node:process'
 import { setAppEnvironment, type AppEnvironment } from '../../shared/app-environment'
+import { HEADLESS_RUNTIME_WINDOW_ID } from '../../shared/runtime-session-contracts'
 import { setSecretStore, type SecretStore } from '../../shared/secret-store'
 import type { ServeReadiness } from '../server/serve-readiness'
 import { setRuntimeBrowserCommandsFactory } from '../runtime/runtime-browser-commands-factory'
@@ -206,6 +207,16 @@ async function startOrcadRuntime(
 
   await runtime.refreshRestoredOrchestrationAuthority()
   await runtime.reconcileLegacyWorkerTerminals()
+
+  // Why: nothing publishes a renderer graph here, so `graphStatus` would stay 'unavailable'
+  // forever and every RPC gated on a ready graph would fail — `captureReadyGraphEpoch()` is
+  // the FIRST statement of runCreateMobileSessionTerminal, so terminal creation returns
+  // `runtime_unavailable` before it reaches any PTY code, and the tab inventory's
+  // `while (true)` waits on an epoch that can never be established and never returns at all.
+  // `--serve` publishes the same empty graph for the same reason (index.ts). Both gates open
+  // from this one call: it adopts the headless id as authoritative, marks the graph ready,
+  // and publishes the tab inventory.
+  runtime.syncWindowGraph(HEADLESS_RUNTIME_WINDOW_ID, { tabs: [], leaves: [] })
 
   const bindHost = resolveOrcadBindHost(options.bind)
   const rpc = new OrcaRuntimeRpcServer({
