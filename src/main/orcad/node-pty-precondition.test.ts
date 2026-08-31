@@ -203,6 +203,54 @@ describe('checkNodePtyPrecondition', () => {
     expect(verdict.reason).not.toBe('spawn_helper_missing')
   })
 
+  /**
+   * node-pty builds `spawn-helper` only inside its binding.gyp `OS=="mac"` block, and its
+   * native `pty.cc` reads the helper path only under `#if defined(__APPLE__)`. Requiring it
+   * on every non-Windows host made real Linux deployments boot `degraded` while their own
+   * daemon self-test reported a healthy pty-spawn round trip in the same output.
+   */
+  const stageLoadableNodePtyWithoutHelper = (): string | null => {
+    const built = join(REAL_NODE_PTY, 'build', 'Release', 'pty.node')
+    if (!existsSync(built)) {
+      // Unprepared checkout: the probe would be `blocked` before reaching the helper check,
+      // so the fixture cannot state anything about it.
+      return null
+    }
+    const dir = stageNodePty()
+    cpSync(built, join(dir, 'build', 'Release', 'pty.node'))
+    expect(existsSync(join(dir, 'build', 'Release', 'spawn-helper'))).toBe(false)
+    return dir
+  }
+
+  it('accepts a Linux host with no spawn-helper, which is every Linux host', () => {
+    const dir = stageLoadableNodePtyWithoutHelper()
+    if (!dir) {
+      return
+    }
+    const verdict = checkNodePtyPrecondition({
+      nodePtyDir: dir,
+      prebuildsDir: null,
+      abi: { ...detectNativeHostAbi(), platform: 'linux' }
+    })
+
+    expect(verdict.reason).not.toBe('spawn_helper_missing')
+    expect(verdict.status).toBe('ok')
+  })
+
+  it('still requires it on darwin, where node-pty actually execs it', () => {
+    const dir = stageLoadableNodePtyWithoutHelper()
+    if (!dir) {
+      return
+    }
+    const verdict = checkNodePtyPrecondition({
+      nodePtyDir: dir,
+      prebuildsDir: null,
+      abi: { ...detectNativeHostAbi(), platform: 'darwin' }
+    })
+
+    expect(verdict).toMatchObject({ status: 'degraded', reason: 'spawn_helper_missing' })
+  })
+
   it('blocks when node-pty is not resolvable at all', () => {
     const verdict = checkNodePtyPrecondition({ nodePtyDir: null, prebuildsDir: null })
     expect(verdict).toMatchObject({ status: 'blocked', reason: 'dependency_missing' })
