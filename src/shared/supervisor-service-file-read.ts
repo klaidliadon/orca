@@ -44,6 +44,47 @@ export function readPlistString(text: string, key: string): string | null {
   return match ? match[1].trim() : null
 }
 
+/**
+ * Splits a systemd command line the way systemd does, rather than on whitespace.
+ *
+ * The generator quotes any path containing a space, so a naive split hands back `"/opt/my`
+ * as the interpreter and the caller then stats a path that was never named — reporting a
+ * unit orcad itself wrote as pointing at a missing binary. Inside double quotes systemd
+ * applies C-style escapes, so one round of those is undone here too.
+ */
+export function splitSystemdCommandLine(command: string): string[] {
+  const words: string[] = []
+  let current = ''
+  let quote: '"' | "'" | null = null
+  let started = false
+  for (let i = 0; i < command.length; i += 1) {
+    const char = command[i]
+    if (char === '\\' && quote !== "'" && i + 1 < command.length) {
+      current += command[i + 1]
+      i += 1
+      started = true
+    } else if (quote === null && (char === '"' || char === "'")) {
+      quote = char
+      started = true
+    } else if (char === quote) {
+      quote = null
+    } else if (quote === null && /\s/.test(char)) {
+      if (started) {
+        words.push(current)
+      }
+      current = ''
+      started = false
+    } else {
+      current += char
+      started = true
+    }
+  }
+  if (started) {
+    words.push(current)
+  }
+  return words
+}
+
 /** systemd writes `Environment=NAME=value`; the plist nests it under EnvironmentVariables. */
 export function readPinnedUserData(file: SupervisorServiceFile): string | null {
   if (file.platform === 'systemd') {
@@ -52,9 +93,16 @@ export function readPinnedUserData(file: SupervisorServiceFile): string | null {
       if (line.startsWith('#')) {
         continue
       }
-      const match = /^Environment\s*=\s*"?ORCA_USER_DATA=([^"]*)"?$/.exec(line)
-      if (match) {
-        return match[1].trim()
+      const match = /^Environment\s*=\s*(.*)$/.exec(line)
+      if (!match) {
+        continue
+      }
+      // Tokenized rather than regexed: one Environment line may carry several assignments,
+      // and the generator quotes this one whenever the root contains a space.
+      for (const assignment of splitSystemdCommandLine(match[1])) {
+        if (assignment.startsWith('ORCA_USER_DATA=')) {
+          return assignment.slice('ORCA_USER_DATA='.length).trim()
+        }
       }
     }
     return null
@@ -101,7 +149,7 @@ export function readExecTarget(
 ): { interpreter: string; script: string | null } | null {
   const words =
     file.platform === 'systemd'
-      ? (readSystemdKey(file.text, 'ExecStart') ?? '').trim().split(/\s+/)
+      ? splitSystemdCommandLine(readSystemdKey(file.text, 'ExecStart') ?? '')
       : [
           ...(
             /<key>\s*ProgramArguments\s*<\/key>\s*<array>([\s\S]*?)<\/array>/i.exec(

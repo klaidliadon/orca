@@ -5,6 +5,7 @@ import {
   SAFE_SYSTEMD_KILL_MODES,
   supervisorInstallHint,
   SupervisorServiceUnsupportedError,
+  systemdQuote,
   type SupervisorServiceConfig
 } from './supervisor-service-render'
 
@@ -49,6 +50,41 @@ describe('data root', () => {
     expect(renderSupervisorService(config({ platform: 'launchd' }))).toContain(
       '<string>/home/orca/.orca</string>'
     )
+  })
+})
+
+describe('paths with spaces', () => {
+  // systemd splits these values on whitespace, so an unquoted space does not fail loudly —
+  // it pins a truncated root and the service comes up healthy and empty, which is the exact
+  // failure pinning the root exists to prevent.
+  const spaced = config({
+    userDataPath: '/Volumes/My Disk/.orca',
+    nodePath: '/opt/my node/bin/node',
+    orcadPath: '/opt/my orcad/orcad.js'
+  })
+
+  it('quotes the pinned data root so systemd reads one path, not three', () => {
+    const unit = renderSupervisorService(spaced)
+    expect(unit).toContain('Environment="ORCA_USER_DATA=/Volumes/My Disk/.orca"')
+    expect(unit).toContain('RequiresMountsFor="/Volumes/My Disk/.orca"')
+  })
+
+  it('quotes each ExecStart word, so a spaced interpreter is not two arguments', () => {
+    const execStart = /^ExecStart=(.*)$/m.exec(renderSupervisorService(spaced))?.[1]
+    expect(execStart).toBe(
+      '"/opt/my node/bin/node" "/opt/my orcad/orcad.js" --bind 127.0.0.1 --port 6800 --json'
+    )
+  })
+
+  it('leaves ordinary paths unquoted, so the common case stays readable', () => {
+    const unit = renderSupervisorService(config())
+    expect(unit).toContain('Environment=ORCA_USER_DATA=/home/orca/.orca')
+    expect(unit).toContain('ExecStart=/usr/local/bin/node /opt/orcad/orcad.js ')
+  })
+
+  it('escapes a quote and a backslash, which systemd unescapes inside double quotes', () => {
+    expect(systemdQuote('/a path/with"quote')).toBe('"/a path/with\\"quote"')
+    expect(systemdQuote('/a path/with\\slash')).toBe('"/a path/with\\\\slash"')
   })
 })
 
