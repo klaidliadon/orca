@@ -36,7 +36,7 @@ type DaemonServerPrivate = {
 /**
  * The daemon is the process deliberately kept alive so terminals outlive the runtime, the
  * supervisor and an update. Killing it destroys every terminal on the host — the same harm
- * `KillMode=mixed` exists to prevent, reached from the client side instead.
+ * `KillMode=process` exists to prevent, reached from the client side instead.
  *
  * A frame with no `id` used to do exactly that: the `.id` read sat one line above the
  * try/catch that was already there, so the TypeError escaped as an unhandled rejection and

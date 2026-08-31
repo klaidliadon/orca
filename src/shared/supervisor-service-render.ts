@@ -42,8 +42,17 @@ export type SupervisorServiceConfig = {
 export const ORCAD_LAUNCHD_LABEL = 'dev.onorca.orcad'
 export const ORCAD_SYSTEMD_UNIT_NAME = 'orcad.service'
 
-/** Every value systemd's `KillMode` may take without reaping the detached daemon. */
-export const SAFE_SYSTEMD_KILL_MODES = ['mixed', 'process', 'none'] as const
+/**
+ * Every value systemd's `KillMode` may take without reaping the detached daemon.
+ *
+ * `mixed` was here and is not safe. It SIGTERMs the main process and then SIGKILLs every
+ * process still in the control group, which is where the detached daemon lives — the
+ * escape it needs is from the cgroup, and setsid does not provide one. Measured on
+ * systemd 219: a restart under mixed destroyed the daemon, its shell and its scrollback;
+ * the identical unit under `process` kept all three. See `auditKillSemantics`, which now
+ * names mixed specifically because orcad itself generated it.
+ */
+export const SAFE_SYSTEMD_KILL_MODES = ['process', 'none'] as const
 
 /**
  * `none` spares the daemon but signals nothing at all, not even the main process, so the
@@ -125,7 +134,17 @@ Environment=ORCA_USER_DATA=${config.userDataPath}
 
 # The terminal daemon is forked detached so PTYs outlive the runtime. systemd's default
 # control-group would reap it and make every restart destroy running work.
-KillMode=mixed
+#
+# process, not mixed. Measured on a Synology NAS running systemd 219: under mixed, a
+# systemctl restart killed the daemon, its shell, the session and its scrollback. mixed
+# SIGTERMs the main process and then SIGKILLs everything STILL IN THE CGROUP, and the
+# daemon is in the cgroup -- setsid does not leave one. Only process signals the main
+# process alone.
+#
+# The cost is real and accepted: systemd no longer reaps what the runtime leaves behind.
+# orcad already owns that lifecycle through the daemon pid-record it adopts on the next
+# start, and a supervisor that helpfully cleans up is exactly what breaks this.
+KillMode=process
 
 # 78 is EX_CONFIG — bad bind address, unusable or foreign data root. Restarting cannot
 # fix it. A transient cause (an orcad you ran by hand) strands the unit here too; clear
