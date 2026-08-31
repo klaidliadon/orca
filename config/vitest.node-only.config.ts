@@ -1,7 +1,7 @@
 /**
  * Runs the node-environment test files on a host that cannot build the full suite.
  *
- * Deliberately not `config/vitest.config.ts`: that one pulls happy-dom, the renderer
+ * Deliberately not the sibling `vitest.config.ts`: that one pulls happy-dom, the renderer
  * aliases and two setup files. The tests this config is for import only node builtins,
  * vitest and local modules, so none of that applies to them — and on a constrained host
  * (a Synology NAS, in the case this was written for) the full toolchain will not install
@@ -12,7 +12,7 @@
  * no second lane, execute nowhere at all. Pointing this config at such a file from an
  * ordinary user account is what makes them run.
  *
- *   node_modules/vitest/vitest.mjs run --config vitest.node-only.config.ts \
+ *   node_modules/vitest/vitest.mjs run --config config/vitest.node-only.config.ts \
  *     --reporter=verbose src/main/orcad/orcad-service-command.test.ts
  *
  * Use `--reporter=verbose` and look for the case you care about: a skipped test still
