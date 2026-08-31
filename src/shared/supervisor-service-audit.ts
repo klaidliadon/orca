@@ -82,12 +82,29 @@ function auditKillSemantics(file: SupervisorServiceFile): SupervisorFinding {
       remedy: 'Regenerate with: orcad --print-service'
     }
   }
+  // Named separately from the generic case because orcad generated this itself until it
+  // was measured: an operator reading this finding is being told that a unit written by
+  // this tool does not do what its own comment claims. Lumping it in with `control-group`
+  // would bury that.
+  if (killMode === 'mixed') {
+    return {
+      code: 'kill_mode_mixed_reaps_daemon',
+      severity: 'critical',
+      message:
+        'KillMode=mixed SIGTERMs the main process and then SIGKILLs everything still in ' +
+        'the control group, which includes the detached terminal daemon — setsid does not ' +
+        'leave a cgroup. Measured on systemd 219: a restart destroyed the daemon, its ' +
+        'shell and its scrollback, where the identical unit under KillMode=process kept ' +
+        'all three. Units orcad generated before this was corrected carry it.',
+      remedy: 'Set KillMode=process, or regenerate with: orcad --print-service'
+    }
+  }
   if (!SAFE_SYSTEMD_KILL_MODES.includes(killMode as (typeof SAFE_SYSTEMD_KILL_MODES)[number])) {
     return {
       code: 'kill_mode_reaps_group',
       severity: 'critical',
       message: `KillMode=${killMode} reaps the whole control group, including the detached terminal daemon.`,
-      remedy: 'Set KillMode=mixed'
+      remedy: 'Set KillMode=process'
     }
   }
   if (
@@ -99,7 +116,7 @@ function auditKillSemantics(file: SupervisorServiceFile): SupervisorFinding {
       code: 'kill_mode_discouraged',
       severity: 'warning',
       message: `KillMode=${killMode} spares the daemon but signals nothing at all, so orcad never gets its graceful stop and systemd deprecates it.`,
-      remedy: 'Set KillMode=mixed'
+      remedy: 'Set KillMode=process'
     }
   }
   return {

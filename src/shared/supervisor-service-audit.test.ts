@@ -37,6 +37,20 @@ function codes(files: SupervisorServiceFile[], expected = ROOT): string[] {
   return audit(files, expected).map((finding) => finding.code)
 }
 
+/**
+ * A `.replace()` that matches nothing returns the string unchanged and the test then
+ * asserts against the unmodified unit. Three tests below went vacuous exactly that way
+ * when the rendered default moved off `mixed`: they kept passing a healthy unit to an
+ * audit and expecting a failure code. Substitutions here must land.
+ */
+function swapKillMode(text: string, replacement: string): string {
+  const swapped = text.replace('KillMode=process', replacement)
+  if (swapped === text) {
+    throw new Error('the rendered unit no longer contains KillMode=process; update this test')
+  }
+  return swapped
+}
+
 /** What `brew services` produces: a plausible unit with no KillMode at all. */
 const HOMEBREW_SHAPED_UNIT = `[Unit]
 Description=Homebrew generated unit for orcad
@@ -65,12 +79,25 @@ describe('kill semantics', () => {
   })
 
   it('flags an explicit control-group', () => {
-    const text = file().text.replace('KillMode=mixed', 'KillMode=control-group')
+    const text = swapKillMode(file().text, 'KillMode=control-group')
     expect(codes([file({ text })])).toContain('kill_mode_reaps_group')
   })
 
+  // The mode orcad itself generated until a NAS restart destroyed a live terminal under
+  // it. mixed SIGKILLs whatever remains in the cgroup once the main process is gone, and
+  // the detached daemon is in the cgroup: setsid escapes the process group, not the cgroup.
+  it('flags KillMode=mixed, which orcad used to generate, as critical', () => {
+    const text = swapKillMode(file().text, 'KillMode=mixed')
+    const findings = audit([file({ text })])
+    expect(findings[0].code).toBe('kill_mode_mixed_reaps_daemon')
+    expect(findings[0].severity).toBe('critical')
+    expect(supervisorAuditPassed(findings)).toBe(false)
+    // The remedy has to name the mode that works, not the one being rejected.
+    expect(findings[0].remedy).toContain('KillMode=process')
+  })
+
   it('warns rather than blesses KillMode=none, which signals nothing at all', () => {
-    const text = file().text.replace('KillMode=mixed', 'KillMode=none')
+    const text = swapKillMode(file().text, 'KillMode=none')
     const findings = audit([file({ text })])
     expect(findings.map((f) => f.code)).toContain('kill_mode_discouraged')
     // It spares the daemon, so it is not the critical failure this audit exists to catch.
@@ -78,7 +105,7 @@ describe('kill semantics', () => {
   })
 
   it('does not read a commented-out KillMode as set', () => {
-    const text = file().text.replace('KillMode=mixed', '# KillMode=mixed')
+    const text = swapKillMode(file().text, '# KillMode=process')
     expect(codes([file({ text })])).toContain('kill_mode_missing')
   })
 
