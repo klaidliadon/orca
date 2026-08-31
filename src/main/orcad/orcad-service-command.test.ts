@@ -2,13 +2,14 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import {
   collectServiceFiles,
   formatFindings,
   inferScopeFromPath,
   isServiceCommand,
-  parseServiceCommandArgs
+  parseServiceCommandArgs,
+  printService
 } from './orcad-service-command'
 
 describe('flag routing', () => {
@@ -45,6 +46,8 @@ describe('argument parsing', () => {
       '7000',
       '--bind',
       '0.0.0.0',
+      '--orcad',
+      '/opt/orcad/orcad.js',
       '--service-path',
       '/tmp/orcad.service',
       '--no-probe'
@@ -56,6 +59,7 @@ describe('argument parsing', () => {
       port: 7000,
       bind: '0.0.0.0',
       servicePath: '/tmp/orcad.service',
+      orcadPath: '/opt/orcad/orcad.js',
       noProbe: true
     })
   })
@@ -65,6 +69,7 @@ describe('argument parsing', () => {
     expect(() => parseServiceCommandArgs(['--port', 'ssh'])).toThrow(/--port/)
     expect(() => parseServiceCommandArgs(['--user'])).toThrow(/--user/)
     expect(() => parseServiceCommandArgs(['--node'])).toThrow(/--node/)
+    expect(() => parseServiceCommandArgs(['--orcad'])).toThrow(/--orcad/)
     expect(() => parseServiceCommandArgs(['--service-path'])).toThrow(/--service-path/)
   })
 
@@ -92,6 +97,60 @@ describe('argument parsing', () => {
       parseServiceCommandArgs(['--doctor', '--service-path', '/tmp/--json.service'])
     ).not.toThrow()
   })
+})
+
+describe('which orcad the unit will exec', () => {
+  // argv[1] is orcad's own entry only when orcad is the process running this. Reached through
+  // `orca supervisor print` it is the CLI's entry, and the unit came out pinning
+  // `ExecStart=<node> .../cli/index.js --bind ... --json` — the orca CLI handed orcad's flags,
+  // which exits before it serves anything. Silent at generation time, and only visible later
+  // as a unit that will not start.
+  function generating(argv1: string, args: string[]): Promise<string> {
+    const originalArgv1 = process.argv[1]
+    const chunks: string[] = []
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      chunks.push(String(chunk))
+      return true
+    })
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    process.argv[1] = argv1
+    return Promise.resolve(printService(args))
+      .then(() => chunks.join(''))
+      .finally(() => {
+        process.argv[1] = originalArgv1
+        stdout.mockRestore()
+        stderr.mockRestore()
+      })
+  }
+
+  it.runIf(process.platform !== 'win32')(
+    'refuses rather than pinning whatever entry point happens to be running',
+    async () => {
+      await expect(generating('/opt/orca/out/cli/index.js', ['--print-service'])).rejects.toThrow(
+        /--orcad/
+      )
+    }
+  )
+
+  it.runIf(process.platform !== 'win32')('takes the explicit path when given one', async () => {
+    const unit = await generating('/opt/orca/out/cli/index.js', [
+      '--print-service',
+      '--orcad',
+      '/opt/orcad/orcad.js',
+      '--user',
+      'orca'
+    ])
+    expect(/^ExecStart=.*$/m.exec(unit)?.[0]).toContain('/opt/orcad/orcad.js')
+    expect(unit).not.toContain('cli/index.js')
+  })
+
+  it.runIf(process.platform !== 'win32')(
+    'still trusts argv[1] when orcad is the process',
+    async () => {
+      const unit = await generating('/opt/orcad/orcad.js', ['--print-service', '--user', 'orca'])
+      expect(/^ExecStart=.*$/m.exec(unit)?.[0]).toContain('/opt/orcad/orcad.js')
+    }
+  )
 })
 
 describe('scope inference', () => {

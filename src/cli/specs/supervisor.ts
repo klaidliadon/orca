@@ -15,17 +15,18 @@ export const SUPERVISOR_COMMAND_SPECS: CommandSpec[] = [
     path: ['supervisor', 'print'],
     summary: 'Print a supervisor service definition for running orcad on this machine',
     usage:
-      'orca supervisor print [--scope user|system] [--user <account>] [--node <path>] [--port <port>] [--bind <address>]',
-    allowedFlags: [...GLOBAL_FLAGS, 'scope', 'user', 'node', 'port', 'bind'],
+      'orca supervisor print --orcad <path> [--scope user|system] [--user <account>] [--node <path>] [--port <port>] [--bind <address>]',
+    allowedFlags: [...GLOBAL_FLAGS, 'orcad', 'scope', 'user', 'node', 'port', 'bind'],
     notes: [
       'Writes the file to stdout and changes nothing; placement and enable commands go to stderr.',
+      '--orcad is required here: this process is the orca CLI, so it cannot name which orcad.js the service should run.',
       'Inspects and describes THIS machine, not a paired remote runtime.',
       'The generated file pins the data root, because a service inherits too little environment to resolve the same one your shell does.',
       'Defaults to a loopback bind; reach a remote orcad over an SSH port-forward rather than widening it.'
     ],
     examples: [
-      'orca supervisor print --scope system --user orca',
-      'orca supervisor print --scope user > ~/.config/systemd/user/orcad.service'
+      'orca supervisor print --orcad ~/.orca-remote/orcad-0.1.0/orcad.js --scope system --user orca',
+      'orca supervisor print --orcad /opt/orcad/orcad.js --scope user > ~/.config/systemd/user/orcad.service'
     ]
   },
   {

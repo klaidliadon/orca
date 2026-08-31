@@ -118,6 +118,7 @@
     // pulls in nothing else.
     "../src/main/orcad/orcad-app-paths.ts",
     "../src/main/orcad/orcad-service-command.ts",
+    "../src/main/orcad/supervisor-service-discovery.ts",
     "../src/main/orcad/supervisor-generation-warnings.ts",
     "../src/main/orcad/supervisor-host-observations.ts",
     // Why these two as well: the doctor answers whether a data root leaves room for the daemon's

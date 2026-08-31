@@ -25,8 +25,11 @@ export type OrcadArtifact = {
   filename: string
 }
 
+/** The bundle's entry point, named once: a generated service definition execs this file. */
+export const ORCAD_ENTRY_FILENAME = 'orcad.js'
+
 export const ORCAD_ARTIFACTS: readonly OrcadArtifact[] = [
-  { filename: 'orcad.js' },
+  { filename: ORCAD_ENTRY_FILENAME },
   // Forked so a native @parcel/watcher fault kills the child, not the server.
   { filename: 'parcel-watcher-process-entry.js' },
   // Forked so PTYs outlive the runtime process; its absence makes every restart destructive.
