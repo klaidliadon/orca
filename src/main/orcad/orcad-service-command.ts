@@ -10,9 +10,8 @@
  * written there: proving something must not bind a port or take the data-root lock. Data
  * root resolution is pure environment reads, so the pinned value is available that early.
  */
-import { existsSync, readFileSync, statSync } from 'node:fs'
-import { homedir, userInfo } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { userInfo } from 'node:os'
+import { basename, resolve } from 'node:path'
 import process from 'node:process'
 import {
   auditSupervisorServices,
@@ -31,15 +30,14 @@ import {
 import { auditDaemonSocketPathBudget } from './supervisor-daemon-socket-budget'
 import type { ProbeTarget } from '../../shared/supervisor-service-probe'
 import {
-  ORCAD_LAUNCHD_LABEL,
-  ORCAD_SYSTEMD_UNIT_NAME,
   renderSupervisorService,
   resolveSupervisorPlatform,
   supervisorInstallHint,
   SupervisorServiceUnsupportedError,
-  type SupervisorPlatform,
   type SupervisorScope
 } from '../../shared/supervisor-service-render'
+import { ORCAD_ENTRY_FILENAME } from '../../shared/orcad-artifacts'
+import { collectServiceFiles } from './supervisor-service-discovery'
 import { resolveUserDataPath } from './orcad-app-paths'
 import {
   interpreterOnDiskWarning,
@@ -48,6 +46,13 @@ import {
   userScopeUnavailableWarning,
   versionScopedInterpreterWarning
 } from './supervisor-generation-warnings'
+
+export {
+  collectServiceFiles,
+  inferScopeFromPath,
+  type ServiceFileDiscovery,
+  type UnreadableServiceFile
+} from './supervisor-service-discovery'
 
 export const PRINT_SERVICE_FLAG = '--print-service'
 export const DOCTOR_FLAG = '--doctor'
@@ -64,6 +69,8 @@ type ServiceCommandOptions = {
   servicePath?: string
   /** Skip live probes: the file-only audit, for a host where shelling out is unwanted. */
   noProbe?: boolean
+  /** Absolute path to the `orcad.js` the unit should exec; required when this is not orcad. */
+  orcadPath?: string
 }
 
 /**
@@ -101,6 +108,12 @@ export function parseServiceCommandArgs(argv: string[]): ServiceCommandOptions {
       }
       options.user = value
       i += 1
+    } else if (argv[i] === '--orcad') {
+      if (!value) {
+        throw new Error('--orcad expects a path')
+      }
+      options.orcadPath = value
+      i += 1
     } else if (argv[i] === '--service-path') {
       if (!value) {
         throw new Error('--service-path expects a path')
@@ -131,15 +144,35 @@ export function parseServiceCommandArgs(argv: string[]): ServiceCommandOptions {
 }
 
 /**
+ * The `orcad.js` the generated unit will exec.
+ *
  * Why argv[1] and not cwd: the same reason `resolveOrcadInstallRoot` uses it — cwd is
  * wherever the operator happened to be, so a sibling resolved against it is found by luck.
+ *
+ * Why the basename is then checked rather than trusted: argv[1] is orcad's own entry only
+ * when orcad is the process running this. Reached through `orca supervisor print` it is the
+ * CLI's entry instead, and the unit came out pinning `ExecStart=<node> .../cli/index.js
+ * --bind ... --port ... --json` — the orca CLI, handed orcad's flags, which exits before it
+ * serves anything. The failure is silent at generation time and only surfaces as a unit that
+ * will not start, so this refuses instead and names the flag that answers it.
  */
-function resolveOrcadEntryPath(): string {
+function resolveOrcadEntryPath(explicit?: string): string {
+  if (explicit) {
+    return resolve(explicit)
+  }
   const entry = process.argv[1]
   if (!entry) {
     throw new Error('cannot resolve this orcad bundle: process.argv[1] is unset')
   }
-  return resolve(entry)
+  const resolved = resolve(entry)
+  if (basename(resolved) !== ORCAD_ENTRY_FILENAME) {
+    throw new Error(
+      `this process is ${resolved}, not ${ORCAD_ENTRY_FILENAME}, so it cannot say which ` +
+        'orcad the service should run. Pass --orcad <path to orcad.js>, or run ' +
+        '`orcad --print-service` from the orcad bundle itself.'
+    )
+  }
+  return resolved
 }
 
 export async function printService(argv: string[]): Promise<number> {
@@ -150,7 +183,7 @@ export async function printService(argv: string[]): Promise<number> {
     platform,
     scope: options.scope,
     nodePath,
-    orcadPath: resolveOrcadEntryPath(),
+    orcadPath: resolveOrcadEntryPath(options.orcadPath),
     // Resolved through symlinks so `RequiresMountsFor` can reach a real mount unit:
     // systemd maps that directive textually and never sees through a symlinked ancestor.
     userDataPath: resolveRealPath(resolveUserDataPath()),
@@ -183,96 +216,6 @@ export async function printService(argv: string[]): Promise<number> {
     `\nWrite this to: ${hint.path}\nThen run:\n${hint.commands.map((c) => `  ${c}`).join('\n')}\n`
   )
   return 0
-}
-
-/** The conventional locations, both scopes, for the platform we are on. */
-function candidateServicePaths(
-  platform: SupervisorPlatform
-): { path: string; scope: SupervisorScope }[] {
-  if (platform === 'launchd') {
-    return [
-      { path: join('/Library/LaunchDaemons', `${ORCAD_LAUNCHD_LABEL}.plist`), scope: 'system' },
-      {
-        path: join(homedir(), 'Library', 'LaunchAgents', `${ORCAD_LAUNCHD_LABEL}.plist`),
-        scope: 'user'
-      }
-    ]
-  }
-  return [
-    { path: join('/etc/systemd/system', ORCAD_SYSTEMD_UNIT_NAME), scope: 'system' },
-    { path: join('/usr/lib/systemd/system', ORCAD_SYSTEMD_UNIT_NAME), scope: 'system' },
-    { path: join(homedir(), '.config', 'systemd', 'user', ORCAD_SYSTEMD_UNIT_NAME), scope: 'user' }
-  ]
-}
-
-/**
- * Why infer rather than default to system: mislabelling a user-scope file makes the audit
- * report its (correct) missing run-as account as critical.
- */
-export function inferScopeFromPath(path: string): SupervisorScope {
-  const normalized = path.split('\\').join('/')
-  return /\/systemd\/user\/|\/LaunchAgents\//i.test(normalized) ? 'user' : 'system'
-}
-
-/** A candidate that is present but could not be read. Never folded into "not found". */
-export type UnreadableServiceFile = { path: string; reason: string }
-
-export type ServiceFileDiscovery = {
-  files: SupervisorServiceFile[]
-  unreadable: UnreadableServiceFile[]
-}
-
-/**
- * Reads every candidate rather than stopping at the first: two definitions targeting one
- * data root is itself the highest-severity finding, and stopping early would hide it.
- *
- * Presence and readability are separated deliberately. `existsSync` succeeds on a file the
- * caller cannot open — a traversable directory is enough — so a unit installed with a
- * restrictive mode used to fall into the same catch as one that was never there, and the
- * audit then told the operator to run `--print-service`: to redo an install that had
- * already succeeded. Observed on Synology DSM, where root's umask is 0077 and
- * `sudo tee` therefore writes /etc/systemd/system/orcad.service mode 600 while every unit
- * shipped with the OS is 644.
- */
-export function collectServiceFiles(
-  platform: SupervisorPlatform,
-  extraPaths: string[] = []
-): ServiceFileDiscovery {
-  const candidates = [
-    ...candidateServicePaths(platform),
-    ...extraPaths.map((path) => ({ path, scope: inferScopeFromPath(path) }))
-  ]
-  const files: SupervisorServiceFile[] = []
-  const unreadable: UnreadableServiceFile[] = []
-  for (const candidate of candidates) {
-    let present = false
-    try {
-      present = existsSync(candidate.path) && statSync(candidate.path).isFile()
-    } catch (error) {
-      // Cannot even stat it: that is a permission answer about a path, not an absence.
-      unreadable.push({ path: candidate.path, reason: errnoOf(error) })
-      continue
-    }
-    if (!present) {
-      continue
-    }
-    try {
-      files.push({
-        path: candidate.path,
-        text: readFileSync(candidate.path, 'utf8'),
-        platform,
-        scope: candidate.scope
-      })
-    } catch (error) {
-      unreadable.push({ path: candidate.path, reason: errnoOf(error) })
-    }
-  }
-  return { files, unreadable }
-}
-
-function errnoOf(error: unknown): string {
-  const code = (error as NodeJS.ErrnoException | null)?.code
-  return typeof code === 'string' ? code : 'unknown error'
 }
 
 const SEVERITY_LABEL = {

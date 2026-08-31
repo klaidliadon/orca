@@ -54,7 +54,7 @@ export const SUPERVISOR_HANDLERS: Record<string, CommandHandler> = {
       )
     }
     await reportingUnsupported(() =>
-      printService(toServiceArgv(flags, ['scope', 'user', 'node', 'port', 'bind']))
+      printService(toServiceArgv(flags, ['orcad', 'scope', 'user', 'node', 'port', 'bind']))
     )
   },
   'supervisor doctor': async ({ flags, json }) => {
