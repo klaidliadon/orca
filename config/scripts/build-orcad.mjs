@@ -275,7 +275,18 @@ if (process.exitCode !== 1) {
  */
 async function smokeLoadWatcherChild() {
   const probeDir = mkdtempSync(join(tmpdir(), 'orcad-watcher-smoke-'))
-  const child = fork(WATCHER_OUT_FILE, [], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
+  // Why hand the child a canary dir instead of letting it make its own: the child only
+  // cleans up a self-made dir from an `exit` handler it registers *after* the canary's
+  // native subscribe resolves. That has not happened by the time the ack lands, and never
+  // happens at all on a machine with no compiled @parcel/watcher — the case this gate
+  // exists to pass. Either way the smoke leaks an empty orca-watcher-canary-* dir per
+  // build. ORCA_WATCHER_CANARY_DIR is the seam the real host uses for exactly this
+  // (see parcel-watcher-child-launch.ts); given one, the child leaves cleanup to us.
+  const canaryDir = mkdtempSync(join(tmpdir(), 'orcad-watcher-smoke-canary-'))
+  const child = fork(WATCHER_OUT_FILE, [], {
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    env: { ...process.env, ORCA_WATCHER_CANARY_DIR: canaryDir }
+  })
   let stderr = ''
   child.stderr?.on('data', (chunk) => {
     stderr += String(chunk)
@@ -326,5 +337,6 @@ async function smokeLoadWatcherChild() {
     })
   } finally {
     rmSync(probeDir, { recursive: true, force: true })
+    rmSync(canaryDir, { recursive: true, force: true })
   }
 }
