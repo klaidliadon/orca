@@ -134,16 +134,20 @@ describe('logging', () => {
     expect(unit).not.toMatch(/StandardOutput=append:/)
   })
 
-  // `/var/log` is root-owned on macOS. A LaunchAgent runs as the operator and cannot create
-  // a file there, and launchd reports that against the log path rather than the job — so the
-  // service reads as a broken install for a reason the plist never names. The renderer does
-  // no I/O, so it cannot resolve a home directory; naming nothing is the honest answer, and
-  // the caller supplies the scope-appropriate path.
-  it('never writes a log path into a plist the caller did not resolve', () => {
-    const plist = renderSupervisorService(config({ platform: 'launchd', scope: 'user' }))
-    expect(plist).not.toContain('/var/log/orcad.log')
-    expect(plist).not.toContain('StandardOutPath')
-  })
+  // No log path can be defaulted that the job is known to be able to open. `/var/log` is
+  // root-owned while the job runs unprivileged, and the generating user's home is the run-as
+  // account's home only when `--user` did not name someone else — which the renderer, doing
+  // no I/O, cannot resolve. Either guess emits a plist whose log the job cannot open, and
+  // launchd reports that against the log path rather than the job: a broken install for a
+  // reason the file never states.
+  it.each(['user', 'system'] as const)(
+    'never guesses a log path for a %s scope job',
+    (scope) => {
+      const plist = renderSupervisorService(config({ platform: 'launchd', scope }))
+      expect(plist).not.toContain('/var/log/orcad.log')
+      expect(plist).not.toContain('StandardOutPath')
+    }
+  )
 
   it('emits both stream keys once the caller names a path', () => {
     const plist = renderSupervisorService(
@@ -152,6 +156,49 @@ describe('logging', () => {
     expect(plist).toContain('<key>StandardOutPath</key>')
     expect(plist).toContain('<key>StandardErrorPath</key>')
     expect(plist.match(/Library\/Logs\/orcad\.log/g)).toHaveLength(2)
+  })
+})
+
+// The generated plist has to survive a real parser, not just read plausibly. XML forbids the
+// string `--` anywhere inside a comment body, and the header comment carried the regeneration
+// command verbatim — so every plist orcad generated, in BOTH scopes, was malformed: expat
+// rejects it, `plutil -lint` rejects it (the first thing an operator runs), and launchctl will
+// not load the job. Nothing caught it because no test parsed the output it asserted against.
+describe('plist well-formedness', () => {
+  function commentBodies(xml: string): string[] {
+    return [...xml.matchAll(/<!--([\s\S]*?)-->/g)].map((match) => match[1])
+  }
+
+  it.each(['user', 'system'] as const)(
+    'puts no double hyphen inside a comment in %s scope',
+    (scope) => {
+      const bodies = commentBodies(
+        renderSupervisorService(config({ platform: 'launchd', scope }))
+      )
+      expect(bodies.length).toBeGreaterThan(0)
+      for (const body of bodies) {
+        expect(body).not.toContain('--')
+      }
+    }
+  )
+
+  // The constraint above is only worth respecting if the guidance survives it: naming the
+  // flags without their dashes has to still tell the reader what to run.
+  it.each(['user', 'system'] as const)('still says how to regenerate a %s job', (scope) => {
+    const plist = renderSupervisorService(config({ platform: 'launchd', scope }))
+    expect(plist).toContain('print-service')
+    expect(plist).toContain(`scope ${scope}`)
+  })
+
+  // A path carrying `--` reaches the document as an escaped <string>, not as a comment, so it
+  // must not be able to break the rule above from the outside.
+  it('is unaffected by a double hyphen inside a generated path', () => {
+    const bodies = commentBodies(
+      renderSupervisorService(config({ platform: 'launchd', userDataPath: '/srv/a--b/.orca' }))
+    )
+    for (const body of bodies) {
+      expect(body).not.toContain('--')
+    }
   })
 })
 

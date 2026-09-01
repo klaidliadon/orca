@@ -94,6 +94,32 @@ export function socketPathBudgetWarning(userDataPath: string): string | null {
 }
 
 /**
+ * launchd captures nothing unless the plist names a file, and no path can be defaulted here
+ * that the job is known to be able to open.
+ *
+ * Both candidates are wrong, for the same reason. `/var/log` is root-owned on macOS while the
+ * job runs as a non-root account — `assertNotRoot` guarantees it is not root — so a
+ * LaunchDaemon cannot create a file there. And the generating user's home is the run-as
+ * account's home only when `--user` did not name somebody else, which this process cannot
+ * resolve. Either guess emits a plist whose log the job cannot open, and launchd reports that
+ * against the log path rather than against the job: a broken install for a reason the file
+ * never states.
+ *
+ * systemd needs no equivalent — journald captures a unit's output with nothing configured —
+ * which is why this asymmetry is stated rather than papered over with a plausible default.
+ */
+export function launchdLogDestinationWarning(): string {
+  return (
+    'Warning: this job names no log file, so launchd will not capture orcad’s output. ' +
+    'No path is defaulted because none can be shown writable by the run-as account: ' +
+    '/var/log is root-owned while the job runs unprivileged, and when --user names another ' +
+    'account its home directory cannot be resolved from here. To keep logs, create a file ' +
+    'the run-as account owns and add StandardOutPath and StandardErrorPath pointing at it — ' +
+    'then pair it with a newsyslog.d entry, because nothing rotates it.'
+  )
+}
+
+/**
  * A user-scope systemd service needs a running user instance, and the install commands
  * (`systemctl --user`, `loginctl enable-linger`) all fail without one. Appliance hosts
  * routinely have no per-user D-Bus and no `/run/user/<uid>` at all.

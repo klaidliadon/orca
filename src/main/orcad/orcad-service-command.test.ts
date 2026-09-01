@@ -216,9 +216,6 @@ describe('discovery separates unreadable from absent', () => {
     expect(unreadable.find((u) => u.path === path)?.reason).toBe('EACCES')
   })
 
-  // Scoped to the path under test rather than to the whole result: discovery also scans the
-  // conventional locations, so a host with a real orcad.service installed would otherwise
-  // fail these on its own installation.
   it('reports a path that truly is not there as neither found nor unreadable', () => {
     const path = join(dir, 'absent.service')
     const { files, unreadable } = collectServiceFiles('systemd', [path])
@@ -232,5 +229,19 @@ describe('discovery separates unreadable from absent', () => {
     const { files, unreadable } = collectServiceFiles('systemd', [path])
     expect(files.map((f) => f.path)).toContain(path)
     expect(unreadable.map((u) => u.path)).not.toContain(path)
+  })
+
+  // An explicit path SELECTS; it does not extend the conventional list. While it extended,
+  // naming the definition conventional discovery already finds — the obvious way to ask for a
+  // report on your actual install — collected that one file twice, and `auditDuplicates` then
+  // called it `multiple_services_one_root` at CRITICAL with exit 1 while silently skipping
+  // every live probe as ambiguous. Asserting the exact result rather than `toContain` is the
+  // point: the old behaviour also "contained" the path, and only an equality check sees the
+  // conventional candidates that came along with it.
+  it('audits only the named definition, not the conventional locations as well', () => {
+    const path = join(dir, 'selected.service')
+    writeFileSync(path, '[Service]\nKillMode=process\n', 'utf8')
+    const { files } = collectServiceFiles('systemd', [path])
+    expect(files.map((f) => f.path)).toEqual([path])
   })
 })

@@ -61,6 +61,15 @@ export type ServiceFileDiscovery = {
  * Reads every candidate rather than stopping at the first: two definitions targeting one
  * data root is itself the highest-severity finding, and stopping early would hide it.
  *
+ * An explicit path SELECTS rather than extends — the difference between "audit this
+ * definition" and "audit the usual ones and also this". Extending looked harmless and was
+ * not: point `--service-path` at the file conventional discovery already finds, which is the
+ * obvious thing to do when you want a report about your actual install, and the same file is
+ * collected twice. `auditDuplicates` then sees two paths sharing one data root and reports
+ * `multiple_services_one_root` as CRITICAL with exit 1, while `files.length` stops being 1
+ * so every live probe is skipped as ambiguous. A false critical and a silently degraded
+ * report, both produced by naming the file you wanted audited.
+ *
  * Presence and readability are separated deliberately. `existsSync` succeeds on a file the
  * caller cannot open — a traversable directory is enough — so a unit installed with a
  * restrictive mode used to fall into the same catch as one that was never there, and the
@@ -71,12 +80,12 @@ export type ServiceFileDiscovery = {
  */
 export function collectServiceFiles(
   platform: SupervisorPlatform,
-  extraPaths: string[] = []
+  explicitPaths: string[] = []
 ): ServiceFileDiscovery {
-  const candidates = [
-    ...candidateServicePaths(platform),
-    ...extraPaths.map((path) => ({ path, scope: inferScopeFromPath(path) }))
-  ]
+  const candidates =
+    explicitPaths.length > 0
+      ? explicitPaths.map((path) => ({ path, scope: inferScopeFromPath(path) }))
+      : candidateServicePaths(platform)
   const files: SupervisorServiceFile[] = []
   const unreadable: UnreadableServiceFile[] = []
   for (const candidate of candidates) {

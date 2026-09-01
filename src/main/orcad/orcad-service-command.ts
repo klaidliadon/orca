@@ -10,8 +10,8 @@
  * written there: proving something must not bind a port or take the data-root lock. Data
  * root resolution is pure environment reads, so the pinned value is available that early.
  */
-import { homedir, userInfo } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { userInfo } from 'node:os'
+import { basename, resolve } from 'node:path'
 import process from 'node:process'
 import {
   auditSupervisorServices,
@@ -41,6 +41,7 @@ import { collectServiceFiles } from './supervisor-service-discovery'
 import { resolveUserDataPath } from './orcad-app-paths'
 import {
   interpreterOnDiskWarning,
+  launchdLogDestinationWarning,
   resolveRealPath,
   socketPathBudgetWarning,
   userScopeUnavailableWarning,
@@ -175,19 +176,6 @@ function resolveOrcadEntryPath(explicit?: string): string {
   return resolved
 }
 
-/**
- * Where a launchd job can actually write its log, which is not one path for both scopes.
- *
- * `/var/log` is root-owned on macOS, so it suits a LaunchDaemon and defeats a LaunchAgent:
- * the agent runs as the operator, cannot create the file, and launchd reports that against
- * the log path rather than the job — so the service looks broken for a reason the plist
- * does not name. Resolved here rather than in the renderer because launchd expands no `~`
- * and the renderer performs no I/O.
- */
-function launchdLogPath(scope: SupervisorScope): string {
-  return scope === 'system' ? '/var/log/orcad.log' : join(homedir(), 'Library/Logs/orcad.log')
-}
-
 export async function printService(argv: string[]): Promise<number> {
   const options = parseServiceCommandArgs(argv)
   const platform = resolveSupervisorPlatform(process.platform)
@@ -204,8 +192,7 @@ export async function printService(argv: string[]): Promise<number> {
     // the account is a flag rather than an inheritance.
     user: options.user ?? userInfo().username,
     bind: options.bind,
-    port: options.port,
-    logPath: platform === 'launchd' ? launchdLogPath(options.scope) : undefined
+    port: options.port
   }
   const hint = supervisorInstallHint(config)
   process.stdout.write(renderSupervisorService(config))
@@ -217,6 +204,7 @@ export async function printService(argv: string[]): Promise<number> {
     socketPathBudgetWarning(config.userDataPath),
     versionScopedInterpreterWarning(nodePath),
     interpreterOnDiskWarning(nodePath, options.nodePath !== undefined),
+    ...(platform === 'launchd' ? [launchdLogDestinationWarning()] : []),
     ...(platform === 'systemd' && options.scope === 'user'
       ? [await userScopeUnavailableWarning()]
       : [])
