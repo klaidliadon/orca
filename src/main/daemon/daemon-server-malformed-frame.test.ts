@@ -133,6 +133,27 @@ describe('malformed control frames', () => {
   )
 
   it.skipIf(process.platform === 'win32')(
+    'error-replies rather than drops when the id is usable but the method is not',
+    async () => {
+      await startServer()
+      const control = await connectControl('control-1')
+
+      // The boundary stops at `id` on purpose. A frame carrying one is answerable, so an
+      // unknown or absent `type` belongs to the router and gets a reply — pinned here so
+      // that tightening `isDispatchableRequest` to check `type` fails loudly rather than
+      // quietly demoting these to drops.
+      for (const frame of [{ id: 'unknown-method', type: 'nope' }, { id: 'no-method' }]) {
+        control.write(encodeNdjson(frame))
+        expect(await nextFrame(control)).toMatchObject({
+          id: frame.id,
+          ok: false,
+          error: expect.stringContaining('Unknown request type')
+        })
+      }
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
     'returns rather than throwing when a caller bypasses the parser',
     async () => {
       await startServer()

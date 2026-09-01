@@ -39,6 +39,12 @@ type DaemonClientConnectionOptions = {
  * The minimum a control frame must carry to be routable: an `id` the reply can be
  * correlated against. Anything else is undispatchable, not merely unknown — an unknown
  * method still gets an error reply, but only if we know where to send it.
+ *
+ * The narrowing asserts *routability, not method validity*, and stopping at `id` is
+ * deliberate: `type` belongs to `DaemonRequestRouter.route`, which ends its switch with
+ * `throw new Error('Unknown request type: …')` and so answers a bad method with a reply.
+ * Checking `type` here would demote that reply to a silent drop, which is the one outcome
+ * a client cannot debug.
  */
 export function isDispatchableRequest(message: unknown): message is DaemonRequest {
   return (
