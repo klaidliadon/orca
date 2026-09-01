@@ -67,4 +67,35 @@ describe('orcad headless startup wiring', () => {
     expect(source.indexOf('stopOrcadAgentHookServer()', failurePath)).toBeGreaterThan(failurePath)
     expect(source.indexOf('agentHookServer.stop()', failurePath)).toBeGreaterThan(failurePath)
   })
+
+  it('finishes teardown when a step rejects instead of skipping the rest', () => {
+    const teardownStart = source.indexOf('stop: async () => {')
+    const failurePath = source.slice(
+      source.indexOf('return await startOrcadRuntime('),
+      teardownStart
+    )
+    const teardown = source.slice(teardownStart)
+
+    // Both awaits genuinely reject: `disconnectDaemon()` fans out over adapters with
+    // `Promise.all` and awaits a checkpoint write, and the browser provider's stop() ends in
+    // `rm()`, whose `force` forgives only ENOENT. In a flat sequence the first rejection skips
+    // every later step, and the last one is `instanceLock.release()` — leak that lock file and
+    // the next orcad launch refuses to start.
+    const daemon = teardown.indexOf('await stopOrcadDaemon()')
+    const hookStop = teardown.indexOf('agentHookServer.stop()', daemon)
+    expect(daemon).toBeGreaterThanOrEqual(0)
+    expect(teardown.slice(daemon, hookStop)).toContain('} finally {')
+
+    const browserStop = teardown.indexOf('await browserProvider?.stop()', hookStop)
+    const release = teardown.indexOf('instanceLock.release()', browserStop)
+    expect(browserStop).toBeGreaterThanOrEqual(0)
+    expect(teardown.slice(browserStop, release)).toContain('} finally {')
+
+    // On the launch-failure path the original error is what the operator needs, so a teardown
+    // rejection is caught there rather than allowed to replace it.
+    const failureBrowserStop = failurePath.indexOf('await browserProvider?.stop()')
+    const failureRelease = failurePath.indexOf('instanceLock.release()', failureBrowserStop)
+    expect(failureBrowserStop).toBeGreaterThanOrEqual(0)
+    expect(failurePath.slice(failureBrowserStop, failureRelease)).toContain('} catch (')
+  })
 })

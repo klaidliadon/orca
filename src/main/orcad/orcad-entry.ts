@@ -126,7 +126,19 @@ export async function startOrcad(options: OrcadOptions = {}): Promise<OrcadHandl
     return await startOrcadRuntime(options, browserProvider, instanceLock)
   } catch (error) {
     stopOrcadAgentHookServer()
-    await browserProvider?.stop()
+    try {
+      await browserProvider?.stop()
+    } catch (stopError) {
+      // Why swallowed rather than rethrown: `error` is why the host failed to come up and is
+      // the one an operator can act on. Letting a teardown rejection replace it reports the
+      // symptom and discards the cause — and would skip the lock release below, so a launch
+      // that failed once would then refuse to be retried.
+      console.error(
+        `[orcad] browser provider teardown failed during launch cleanup: ${
+          stopError instanceof Error ? stopError.message : String(stopError)
+        }`
+      )
+    }
     setRuntimeBrowserCommandsFactory(null)
     runOrcadQuitHandlers()
     instanceLock.release()
@@ -346,17 +358,30 @@ async function startOrcadRuntime(
       try {
         await rpc.stop()
       } finally {
-        // Why disconnect and not shut down: the daemon must outlive this process, or an
-        // orcad restart goes back to killing every running terminal. See
-        // orcad-daemon-supervision.ts.
-        await stopOrcadDaemon()
-        // Why no unlink of the endpoint file: stop() leaves it deliberately — a stale file
-        // matches the hook's fail-open behaviour and avoids a TOCTOU race with a concurrent Orca.
-        agentHookServer.stop()
-        await browserProvider?.stop()
-        setRuntimeBrowserCommandsFactory(null)
-        runOrcadQuitHandlers()
-        instanceLock.release()
+        // Why nested and not one flat sequence: every step here is independent teardown, and
+        // both awaits genuinely reject — `disconnectDaemon()` fans out over adapters with
+        // `Promise.all` and awaits a checkpoint write, and the browser provider's stop() ends
+        // in `rm()`, whose `force` forgives only ENOENT. Flat, the first rejection skips every
+        // later step, and the step furthest down is `instanceLock.release()`: a leaked lock
+        // file makes the NEXT launch refuse to start, so one bad shutdown costs the host until
+        // someone deletes it by hand. Nesting keeps the first failure as the reported one.
+        try {
+          // Why disconnect and not shut down: the daemon must outlive this process, or an
+          // orcad restart goes back to killing every running terminal. See
+          // orcad-daemon-supervision.ts.
+          await stopOrcadDaemon()
+        } finally {
+          // Why no unlink of the endpoint file: stop() leaves it deliberately — a stale file
+          // matches the hook's fail-open behaviour and avoids a TOCTOU race with a concurrent Orca.
+          agentHookServer.stop()
+          try {
+            await browserProvider?.stop()
+          } finally {
+            setRuntimeBrowserCommandsFactory(null)
+            runOrcadQuitHandlers()
+            instanceLock.release()
+          }
+        }
       }
     }
   }
