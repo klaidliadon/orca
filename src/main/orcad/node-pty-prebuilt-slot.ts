@@ -70,7 +70,8 @@ export function readPrebuiltSlotManifest(prebuildsDir: string): PrebuiltSlotMani
 }
 
 /**
- * Copy `<prebuilds>/<slot>/pty.node` (and `spawn-helper`) into node-pty's `build/Release`.
+ * Copy `<prebuilds>/<slot>/pty.node` (and, on macOS only, `spawn-helper`) into node-pty's
+ * `build/Release`.
  *
  * Refuses on an ABI mismatch instead of copying: a binary built for another
  * `NODE_MODULE_VERSION` cannot load, and installing it would replace a "no prebuilt"
