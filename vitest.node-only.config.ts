@@ -13,7 +13,7 @@
  * ordinary user account is what makes them run.
  *
  *   node_modules/vitest/vitest.mjs run --config vitest.node-only.config.ts \
- *     --reporter=verbose src/main/orcad/orcad-service-command.test.ts
+ *     --reporter=verbose src/main/agent-hooks/installer-utils.test.ts
  *
  * Use `--reporter=verbose` and look for the case you care about: a skipped test still
  * counts toward "passed" in the summary line, so the count alone cannot tell you whether
