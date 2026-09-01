@@ -1,44 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { connect, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DaemonServer } from './daemon-server'
-import { DaemonClient } from './client'
 import { isDispatchableRequest } from './daemon-client-connections'
 import { getDaemonSocketPath } from './daemon-spawner'
+import { encodeNdjson } from './ndjson'
 import type { SubprocessHandle } from './session-subprocess-handle'
-import type { DaemonRequest } from './types'
+import { PROTOCOL_VERSION, type DaemonRequest } from './types'
 
-function createMockSubprocess(): SubprocessHandle {
-  let notifyExit: ((code: number) => void) | null = null
-  const exit = (): void => notifyExit?.(0)
-  return {
-    pid: 44444,
-    getForegroundProcess: () => null,
-    write() {},
-    resize() {},
-    kill: exit,
-    terminateOwnedTree: () => 'unavailable' as const,
-    forceKill: exit,
-    signal() {},
-    onData() {},
-    onExit(callback) {
-      notifyExit = callback
-    },
-    dispose() {}
-  }
+function unusedSubprocess(): SubprocessHandle {
+  throw new Error('Test must not create a PTY')
 }
 
 type DaemonServerPrivate = {
   handleRequest(socket: unknown, clientId: string, request: DaemonRequest): Promise<void>
 }
 
+/** Every shape the parser hands through that carries no id a reply could be correlated against. */
+const UNROUTABLE_FRAMES = [null, 42, 'string', [], {}, { type: 'ping' }, { id: 42 }, { id: '' }]
+
 /**
  * The daemon is the process deliberately kept alive so terminals outlive the runtime, the
  * supervisor and an update. Killing it destroys every terminal on the host — the same harm
  * `KillMode=process` exists to prevent, reached from the client side instead.
  *
- * A frame with no `id` used to do exactly that: the `.id` read sat one line above the
+ * A frame with no usable `id` used to do exactly that: the `.id` read sat one line above the
  * try/catch that was already there, so the TypeError escaped as an unhandled rejection and
  * the daemon's uncaughtException handler rethrew it.
  */
@@ -47,7 +35,7 @@ describe('malformed control frames', () => {
   let socketPath: string
   let tokenPath: string
   let server: DaemonServer
-  let client: DaemonClient | null = null
+  const sockets: Socket[] = []
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'daemon-malformed-frame-'))
@@ -56,39 +44,91 @@ describe('malformed control frames', () => {
   })
 
   afterEach(async () => {
-    client?.disconnect()
-    client = null
+    for (const socket of sockets.splice(0)) {
+      socket.destroy()
+    }
     await server?.shutdown()
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it.skipIf(process.platform === 'win32')(
-    'keeps serving after a frame with no usable id',
-    async () => {
-      server = new DaemonServer({
-        socketPath,
-        tokenPath,
-        spawnSubprocess: () => createMockSubprocess()
+  async function startServer(): Promise<void> {
+    server = new DaemonServer({ socketPath, tokenPath, spawnSubprocess: unusedSubprocess })
+    await server.start()
+  }
+
+  async function openSocket(): Promise<Socket> {
+    const socket = connect(socketPath)
+    sockets.push(socket)
+    await new Promise<void>((resolve, reject) => {
+      socket.once('connect', resolve)
+      socket.once('error', reject)
+    })
+    return socket
+  }
+
+  /** Reads exactly one NDJSON frame, so each step can await the daemon's own answer. */
+  function nextFrame(socket: Socket): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
+      socket.once('data', (data) => {
+        resolve(JSON.parse(data.toString().split('\n')[0]) as Record<string, unknown>)
       })
-      await server.start()
+      socket.once('error', reject)
+      socket.once('close', () => reject(new Error('closed before a frame arrived')))
+    })
+  }
+
+  async function connectControl(clientId: string): Promise<Socket> {
+    const socket = await openSocket()
+    socket.write(
+      encodeNdjson({
+        type: 'hello',
+        version: PROTOCOL_VERSION,
+        token: readFileSync(tokenPath, 'utf8').trim(),
+        clientId,
+        role: 'control'
+      })
+    )
+    expect(await nextFrame(socket)).toMatchObject({ type: 'hello', ok: true })
+    return socket
+  }
+
+  /** A ping round-trip is the proof of life: it needs the parser, the router and the reply. */
+  async function expectStillServing(socket: Socket, id: string): Promise<void> {
+    socket.write(encodeNdjson({ id, type: 'ping' }))
+    expect(await nextFrame(socket)).toMatchObject({ id, ok: true, payload: { pong: true } })
+  }
+
+  it.skipIf(process.platform === 'win32')(
+    'drops unroutable frames at the socket and keeps serving the same connection',
+    async () => {
+      await startServer()
+      const control = await connectControl('control-1')
+
+      // Fed as raw bytes through the real NDJSON parser, which is the boundary the guard
+      // sits on. Driving `handleRequest` directly would skip it entirely.
+      for (const frame of UNROUTABLE_FRAMES) {
+        control.write(`${JSON.stringify(frame)}\n`)
+      }
+
+      // "Nothing threw" would pass equally against a daemon that had already exited, so
+      // prove the same connection still round-trips after the malformed frames.
+      await expectStillServing(control, 'after-malformed')
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'returns rather than throwing when a caller bypasses the parser',
+    async () => {
+      await startServer()
       const daemon = server as unknown as DaemonServerPrivate
 
-      // Every shape the parser can hand through, `null` included — it casts whatever JSON
-      // parsed straight to DaemonRequest.
-      for (const frame of [null, undefined, {}, { type: 'write' }, { id: 42 }, { id: '' }]) {
+      // The parser guard cannot protect `handleRequest` from its in-process callers, so the
+      // id read carries its own guard. Without it the rejection escapes as an unhandled one.
+      for (const frame of [...UNROUTABLE_FRAMES, undefined]) {
         await expect(
           daemon.handleRequest({}, 'control-1', frame as unknown as DaemonRequest)
         ).resolves.toBeUndefined()
       }
-
-      // The assertion that matters. "No throw escaped" would pass equally against a daemon
-      // that had already exited cleanly, so prove it is still accepting connections and
-      // still doing work.
-      client = new DaemonClient({ socketPath, tokenPath })
-      await client.ensureConnected()
-      await expect(
-        client.request('createOrAttach', { sessionId: 'after-malformed', cols: 80, rows: 24 })
-      ).resolves.toMatchObject({ isNew: true })
     }
   )
 })
@@ -96,12 +136,9 @@ describe('malformed control frames', () => {
 describe('isDispatchableRequest', () => {
   // A reply has to be correlated against an id, so a frame without one is undispatchable
   // rather than merely unknown: an unknown method still gets an error reply.
-  it.each([null, undefined, 42, 'string', [], {}, { type: 'write' }, { id: 42 }, { id: '' }])(
-    'refuses %o',
-    (message) => {
-      expect(isDispatchableRequest(message)).toBe(false)
-    }
-  )
+  it.each([...UNROUTABLE_FRAMES, undefined])('refuses %o', (message) => {
+    expect(isDispatchableRequest(message)).toBe(false)
+  })
 
   it('accepts a frame carrying a non-empty string id', () => {
     expect(isDispatchableRequest({ id: 'notify_1', type: 'write' })).toBe(true)
