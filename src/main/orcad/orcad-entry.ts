@@ -364,7 +364,13 @@ async function startOrcadRuntime(
         // in `rm()`, whose `force` forgives only ENOENT. Flat, the first rejection skips every
         // later step, and the step furthest down is `instanceLock.release()`: a leaked lock
         // file makes the NEXT launch refuse to start, so one bad shutdown costs the host until
-        // someone deletes it by hand. Nesting keeps the first failure as the reported one.
+        // someone deletes it by hand.
+        //
+        // What nesting buys is that every step RUNS — not that the first failure is the one
+        // reported. A throw from a `finally` replaces the in-flight exception, so if the daemon
+        // and the browser provider both reject the caller sees the browser's. That is the right
+        // trade here: the lock is released either way, and a lost second error costs a log line
+        // where a skipped release costs the next launch.
         try {
           // Why disconnect and not shut down: the daemon must outlive this process, or an
           // orcad restart goes back to killing every running terminal. See
