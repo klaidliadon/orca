@@ -117,6 +117,22 @@ describe('malformed control frames', () => {
   )
 
   it.skipIf(process.platform === 'win32')(
+    'survives a first frame that is not an object and keeps accepting new clients',
+    async () => {
+      await startServer()
+
+      // `null` never reached the id guard: the hello handler read `.type` off it first, and
+      // that throw is synchronous inside the socket's data handler — before any token check,
+      // so it needed no credentials at all.
+      const hostile = await openSocket()
+      hostile.write('null\n')
+      expect(await nextFrame(hostile)).toMatchObject({ type: 'hello', ok: false })
+
+      await expectStillServing(await connectControl('control-after-hostile'), 'after-hostile')
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
     'returns rather than throwing when a caller bypasses the parser',
     async () => {
       await startServer()

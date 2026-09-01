@@ -118,6 +118,16 @@ export class DaemonClientConnections {
   }
 
   private handleFirstMessage(socket: Socket, message: unknown): void {
+    // The same unchecked cast as the control parser had, one frame earlier and before any
+    // token is checked: `JSON.parse('null')` is a valid frame, and reading `.type` off it
+    // threw synchronously inside the socket's `data` handler — an uncaught exception, so
+    // the daemon died before it could reject the hello.
+    if (typeof message !== 'object' || message === null) {
+      this.options.log.log('client-hello-rejected', { reason: 'not-an-object' })
+      socket.write(encodeNdjson({ type: 'hello', ok: false, error: 'Expected hello' }))
+      socket.destroy()
+      return
+    }
     const hello = message as HelloMessage
     if (hello.type !== 'hello') {
       this.options.log.log('client-hello-rejected', { reason: 'expected-hello' })
