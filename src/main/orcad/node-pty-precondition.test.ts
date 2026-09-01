@@ -31,10 +31,12 @@ const realNodePtyLoads = ((): boolean => {
   if (!existsSync(REAL_PTY_NODE)) {
     return false
   }
-  // Why spawn-helper too: a slot without it is legitimately 'degraded', so a test that
-  // expects 'ok' has an unsatisfiable premise on a host that lacks it. CI has the
-  // binding but not the helper, which is what made the previous gate insufficient.
-  if (process.platform !== 'win32' && !existsSync(REAL_SPAWN_HELPER)) {
+  // Why darwin only: a macOS slot without the helper is legitimately 'degraded', so a test
+  // expecting 'ok' has an unsatisfiable premise there. Linux never ships one — node-pty
+  // builds spawn-helper only under binding.gyp's `OS=="mac"` — so demanding it here held
+  // this gate false on every Linux host and silently skipped the load-dependent tests on
+  // the one platform whose verdict this change is about.
+  if (process.platform === 'darwin' && !existsSync(REAL_SPAWN_HELPER)) {
     return false
   }
   const probe = spawnSync(process.execPath, ['-e', `require(${JSON.stringify(REAL_PTY_NODE)})`], {
@@ -210,14 +212,16 @@ describe('checkNodePtyPrecondition', () => {
    * daemon self-test reported a healthy pty-spawn round trip in the same output.
    */
   const stageLoadableNodePtyWithoutHelper = (): string | null => {
-    const built = join(REAL_NODE_PTY, 'build', 'Release', 'pty.node')
-    if (!existsSync(built)) {
-      // Unprepared checkout: the probe would be `blocked` before reaching the helper check,
-      // so the fixture cannot state anything about it.
+    if (!realNodePtyLoads) {
+      // Why realNodePtyLoads and not existsSync: both tests below assert a verdict reached
+      // only *after* the load probe succeeds, and CI ships a pty.node built for Electron's
+      // ABI — present, yet it fails to `require` under plain Node. Gating on existence would
+      // run them there against a `blocked` verdict, the exact trap this file's header
+      // documents.
       return null
     }
     const dir = stageNodePty()
-    cpSync(built, join(dir, 'build', 'Release', 'pty.node'))
+    cpSync(REAL_PTY_NODE, join(dir, 'build', 'Release', 'pty.node'))
     expect(existsSync(join(dir, 'build', 'Release', 'spawn-helper'))).toBe(false)
     return dir
   }
@@ -288,8 +292,9 @@ describe('checkNodePtyPrecondition', () => {
 
   // Why gated on the real binding: this asserts a LOAD outcome, so it needs a pty.node
   // built for the Node ABI. CI's shard never runs ensure-native-runtime, so the copy
-  // ENOENT'd there.
-  it.runIf(process.platform !== 'win32' && realNodePtyLoads)(
+  // ENOENT'd there. Why darwin: it passes no `abi`, so it reads the real host's — and off
+  // macOS a missing helper is now correctly `ok`, which the linux case above asserts.
+  it.runIf(process.platform === 'darwin' && realNodePtyLoads)(
     'degrades rather than blocks when only spawn-helper is missing',
     () => {
       // node-pty posix_spawns spawn-helper, so this host loads fine and then fails ENOENT
