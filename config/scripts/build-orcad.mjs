@@ -293,10 +293,10 @@ async function smokeLoadWatcherChild() {
   })
   try {
     return await new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        child.kill('SIGKILL')
-        resolve(`No 'subscribe-started' ack within 30s.\n${stderr.slice(0, 2000)}`)
-      }, 30_000)
+      const timer = setTimeout(
+        () => settle(`No 'subscribe-started' ack within 30s.\n${stderr.slice(0, 2000)}`),
+        30_000
+      )
       let settled = false
       const settle = (failure) => {
         if (settled) {
@@ -311,10 +311,30 @@ async function smokeLoadWatcherChild() {
         // failure. It surfaces on slow hardware far more than on a fast one.
         child.removeAllListeners('exit')
         child.removeAllListeners('error')
+        // The child outlives the verdict by a few ms, and an emitter with no 'error'
+        // listener throws on emit — so a stray kill/EPIPE error here would crash the build
+        // this function just passed.
+        child.on('error', () => {})
         if (child.connected) {
           child.disconnect()
         }
-        child.kill('SIGKILL')
+        // Why still wait for the exit we just stopped grading: the caller's `finally`
+        // removes probeDir and canaryDir, and a child that still holds a native watcher
+        // handle on either fails that rmSync with EBUSY/EPERM on Windows, where kill()
+        // only *starts* an asynchronous TerminateProcess. Only the timing is used; the
+        // code and signal are never read again. Bounded, so an unreapable child degrades
+        // to a leaked temp dir rather than a hung build.
+        if (child.exitCode === null && child.signalCode === null) {
+          const reaped = setTimeout(() => resolve(failure), 5_000)
+          child.once('exit', () => {
+            clearTimeout(reaped)
+            resolve(failure)
+          })
+          child.kill('SIGKILL')
+          return
+        }
+        // Already dead — usually the exit-before-ack failure, whose own `exit` event is
+        // what called this. Waiting for a second one would just burn the deadline.
         resolve(failure)
       }
       child.on('message', (message) => {
@@ -336,7 +356,15 @@ async function smokeLoadWatcherChild() {
       child.send({ op: 'subscribe', id: 1, dir: probeDir, opts: {} })
     })
   } finally {
-    rmSync(probeDir, { recursive: true, force: true })
-    rmSync(canaryDir, { recursive: true, force: true })
+    // Best-effort on purpose, matching removeWatcherCanaryDirectory: `force` only covers
+    // ENOENT, so a handle this smoke does not control could still surface EBUSY/EPERM.
+    // A leaked temp dir must never fail a build whose watcher child loaded cleanly.
+    for (const dir of [probeDir, canaryDir]) {
+      try {
+        rmSync(dir, { recursive: true, force: true })
+      } catch {
+        // Housekeeping only; the verdict above already stands.
+      }
+    }
   }
 }
