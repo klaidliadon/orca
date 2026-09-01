@@ -78,12 +78,15 @@ describe('the limit is the kernel’s', () => {
       // already long enough to make that impossible.
       const base = mkdtempSync(join(tmpdir(), 'sb-'))
       try {
-        const under = join(base, 'a'.repeat(UNIX_SOCKET_PATH_LIMIT - base.length - 2))
-        const over = `${under}bb`
-        expect(unixSocketPathBytes(under)).toBe(UNIX_SOCKET_PATH_LIMIT - 1)
-        expect(await bindable(under)).toBe(true)
-        expect(unixSocketPathBytes(over)).toBe(UNIX_SOCKET_PATH_LIMIT + 1)
-        expect(await bindable(over)).toBe(false)
+        // Exactly the limit, because that is the length production admits: a constant one byte
+        // too high still binds at `limit - 1` and still fails past `limit + 1`, so only the
+        // accepted boundary catches it — and that is the direction that readmits the defect.
+        const atLimit = join(base, 'a'.repeat(UNIX_SOCKET_PATH_LIMIT - base.length - 1))
+        const overLimit = `${atLimit}b`
+        expect(unixSocketPathBytes(atLimit)).toBe(UNIX_SOCKET_PATH_LIMIT)
+        expect(await bindable(atLimit)).toBe(true)
+        expect(unixSocketPathBytes(overLimit)).toBe(UNIX_SOCKET_PATH_LIMIT + 1)
+        expect(await bindable(overLimit)).toBe(false)
       } finally {
         rmSync(base, { recursive: true, force: true })
       }
