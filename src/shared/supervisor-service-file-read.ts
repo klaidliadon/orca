@@ -39,9 +39,39 @@ export function readPlistBoolean(text: string, key: string): boolean | null {
   return match ? match[1].toLowerCase() === 'true' : null
 }
 
+const XML_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'"
+}
+
+/**
+ * The inverse of the generator's `xmlEscape`, and it exists for the same reason the systemd
+ * splitter does: a read is only correct if it undoes what the write did. A data root holding
+ * `&` is written `&amp;`, and an undecoded read then compares `/srv/a&amp;b` against the
+ * caller's `/srv/a&b` — reporting the generator's own plist as a mismatched data root, and
+ * stat-ing an ExecStart path that was never on disk.
+ *
+ * One pass over the named entities, so `&amp;lt;` decodes to the literal `&lt;` rather than
+ * being decoded twice into `<`. Numeric entities are left alone: the generator never emits
+ * one, and half-decoding a hand-edited path is worse than not touching it.
+ */
+function xmlUnescape(value: string): string {
+  return value.replace(/&(amp|lt|gt|quot|apos);/g, (whole, entity: string) => {
+    return XML_ENTITIES[entity] ?? whole
+  })
+}
+
 export function readPlistString(text: string, key: string): string | null {
   const match = new RegExp(`<key>\\s*${key}\\s*</key>\\s*<string>([^<]*)</string>`, 'i').exec(text)
-  return match ? match[1].trim() : null
+  return match ? xmlUnescape(match[1].trim()) : null
+}
+
+/** Every `<string>` in an already-narrowed fragment, decoded the same way. */
+function readPlistStrings(fragment: string): string[] {
+  return [...fragment.matchAll(/<string>([^<]*)<\/string>/g)].map((match) => xmlUnescape(match[1]))
 }
 
 /**
@@ -127,9 +157,7 @@ export function readConfiguredEndpoint(
   const command =
     file.platform === 'systemd'
       ? (readSystemdKey(file.text, 'ExecStart') ?? '')
-      : [...(programArguments ?? '').matchAll(/<string>([^<]*)<\/string>/g)]
-          .map((match) => match[1])
-          .join(' ')
+      : readPlistStrings(programArguments ?? '').join(' ')
   const port = Number(/--port[\s=]+(\d+)/.exec(command)?.[1])
   if (!Number.isInteger(port)) {
     return null
@@ -150,13 +178,10 @@ export function readExecTarget(
   const words =
     file.platform === 'systemd'
       ? splitSystemdCommandLine(readSystemdKey(file.text, 'ExecStart') ?? '')
-      : [
-          ...(
-            /<key>\s*ProgramArguments\s*<\/key>\s*<array>([\s\S]*?)<\/array>/i.exec(
-              file.text
-            )?.[1] ?? ''
-          ).matchAll(/<string>([^<]*)<\/string>/g)
-        ].map((match) => match[1])
+      : readPlistStrings(
+          /<key>\s*ProgramArguments\s*<\/key>\s*<array>([\s\S]*?)<\/array>/i.exec(file.text)?.[1] ??
+            ''
+        )
   // systemd allows `-`, `@`, `+`, `!` prefixes on ExecStart; strip them off the binary.
   const interpreter = words[0]?.replace(/^[-@+!:]+/, '') ?? ''
   if (!interpreter) {

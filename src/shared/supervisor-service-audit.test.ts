@@ -141,6 +141,30 @@ describe('data root', () => {
     expect(findings.map((f) => f.code)).toContain('user_data_mismatch')
     expect(supervisorAuditPassed(findings)).toBe(true)
   })
+
+  // The end-to-end form of the escape/decode pair: the generator writes `&` as `&amp;`, so
+  // an audit that does not decode compares two spellings of one path and accuses the plist
+  // this tool just produced of pointing somewhere else.
+  it('does not accuse its own plist of a mismatch over an escaped character', () => {
+    const escapedRoot = '/Volumes/a&b/.orca'
+    const plist: SupervisorServiceFile = {
+      path: '/Library/LaunchDaemons/dev.onorca.orcad.plist',
+      platform: 'launchd',
+      scope: 'system',
+      text: renderSupervisorService({
+        platform: 'launchd',
+        scope: 'system',
+        nodePath: '/usr/local/bin/node',
+        orcadPath: '/opt/orcad/orcad.js',
+        userDataPath: escapedRoot,
+        user: 'orca',
+        bind: '127.0.0.1',
+        port: 6800,
+        logPath: '/var/log/orcad.log'
+      })
+    }
+    expect(codes([plist], escapedRoot)).not.toContain('user_data_mismatch')
+  })
 })
 
 describe('run-as account', () => {
@@ -152,6 +176,19 @@ describe('run-as account', () => {
   it('flags User=root', () => {
     const text = file().text.replace('User=orca', 'User=root')
     expect(codes([file({ text })])).toContain('run_as_root')
+  })
+
+  // `User=0` is root spelled numerically, which systemd accepts. A name-only check reads it
+  // back as an ordinary account and reports `Runs as 0.` as healthy — the audit has to know
+  // the same rule the generator's guard does, or the numeric spelling walks between them.
+  it('flags the numeric spelling of root too', () => {
+    const text = file().text.replace('User=orca', 'User=0')
+    expect(codes([file({ text })])).toContain('run_as_root')
+  })
+
+  it('does not flag an ordinary account that merely ends in a digit', () => {
+    const text = file().text.replace('User=orca', 'User=orca0')
+    expect(codes([file({ text })])).toContain('run_as_user_set')
   })
 
   it('accepts a user-scope unit with no User', () => {

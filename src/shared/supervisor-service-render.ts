@@ -35,7 +35,14 @@ export type SupervisorServiceConfig = {
   user: string
   bind: string
   port: number
-  /** Only used by launchd, which cannot log to journald. */
+  /**
+   * Only used by launchd, which cannot log to journald. Absolute, and resolved by the
+   * caller: launchd expands no `~`, and the writable location depends on the scope. A
+   * LaunchAgent runs unprivileged, so it cannot create `/var/log/orcad.log` — that path is
+   * root-owned on macOS. Omitted rather than defaulted, because a plist naming a log the
+   * job cannot open is worse than one naming none: launchd reports the failure against the
+   * file, not against the job, so it reads as a broken install.
+   */
   logPath?: string
 }
 
@@ -84,12 +91,24 @@ export function resolveSupervisorPlatform(platform: NodeJS.Platform): Supervisor
 }
 
 /**
+ * `root` by name and `0` by number are one account. systemd's `User=` takes either spelling,
+ * so a check that only knows the name renders exactly the unit it exists to refuse, and the
+ * audit that only knows the name reads `User=0` back and reports `Runs as 0.` as healthy.
+ * Both halves share this for that reason — the guard and the reader have to agree on what
+ * root is, or the numeric spelling walks through the gap between them.
+ */
+export function isRootAccount(user: string): boolean {
+  const account = user.trim()
+  return account === 'root' || /^0+$/.test(account)
+}
+
+/**
  * Why refuse rather than render: a unit that runs orcad as root creates a root-owned data
  * root, and every later user-scope run then refuses with `orcad_data_root_wrong_owner` —
  * a state orcad deliberately will not repair, because the permissions are not its to fix.
  */
 function assertNotRoot(user: string): void {
-  if (user === 'root') {
+  if (isRootAccount(user)) {
     throw new Error(
       'refusing to generate a service that runs orcad as root: orcad would create a ' +
         'root-owned data root, and every later run as a normal user would then fail with ' +
@@ -195,7 +214,17 @@ function renderLaunchd(config: SupervisorServiceConfig): string {
   const args = [config.nodePath, ...orcadArgs(config)]
     .map((arg) => `    <string>${xmlEscape(arg)}</string>`)
     .join('\n')
-  const logPath = config.logPath ?? '/var/log/orcad.log'
+  // launchd has no journald equivalent, so this is a file and nothing rotates it — pair it
+  // with a newsyslog.d entry. Emitted only when the caller resolved a path it knows the job
+  // can write; see `logPath`.
+  const logKeys = config.logPath
+    ? `
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(config.logPath)}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(config.logPath)}</string>
+`
+    : ''
   const scopeNote =
     config.scope === 'system'
       ? '  LaunchDaemon: runs at boot, independent of any login session.'
@@ -236,14 +265,7 @@ ${args}
     <key>ORCA_USER_DATA</key>
     <string>${xmlEscape(config.userDataPath)}</string>
   </dict>
-
-  <!-- launchd has no journald equivalent, so this is a file, and nothing rotates it.
-       Pair it with a newsyslog.d entry. -->
-  <key>StandardOutPath</key>
-  <string>${xmlEscape(logPath)}</string>
-  <key>StandardErrorPath</key>
-  <string>${xmlEscape(logPath)}</string>
-</dict>
+${logKeys}</dict>
 </plist>
 `
 }

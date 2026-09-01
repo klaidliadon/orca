@@ -21,6 +21,7 @@ import {
 } from './supervisor-service-file-read'
 import {
   DISCOURAGED_SYSTEMD_KILL_MODES,
+  isRootAccount,
   SAFE_SYSTEMD_KILL_MODES
 } from './supervisor-service-render'
 
@@ -169,12 +170,11 @@ function auditRunAsUser(file: SupervisorServiceFile): SupervisorFinding {
       remedy: file.scope === 'system' ? 'Add an explicit run-as account.' : undefined
     }
   }
-  if (user === 'root') {
+  if (isRootAccount(user)) {
     return {
       code: 'run_as_root',
       severity: 'critical',
-      message:
-        'Service runs orcad as root, which creates a root-owned data root no later user run can use.',
+      message: `Service runs orcad as root (${user}), which creates a root-owned data root no later user run can use.`,
       remedy: 'Set the account orcad should run as.'
     }
   }

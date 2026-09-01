@@ -61,6 +61,60 @@ describe('reading back what the generator wrote', () => {
   })
 })
 
+// The plist half of the same rule. The generator XML-escapes every value it writes, so a
+// reader that does not decode compares `/srv/a&amp;b` against the caller's `/srv/a&b` and
+// calls the generator's own output a mismatched data root — or stats an ExecStart path that
+// was never on disk and reports a healthy job as unable to start.
+describe('reading back what the generator wrote to a plist', () => {
+  const hostile = {
+    userDataPath: '/Volumes/a&b/<orca>',
+    nodePath: '/opt/n&de/bin/node',
+    orcadPath: '/opt/orc&d/orcad.js'
+  }
+
+  function plist(overrides: typeof hostile): SupervisorServiceFile {
+    return {
+      path: '/Library/LaunchDaemons/dev.onorca.orcad.plist',
+      text: renderSupervisorService({
+        platform: 'launchd',
+        scope: 'system',
+        nodePath: overrides.nodePath,
+        orcadPath: overrides.orcadPath,
+        userDataPath: overrides.userDataPath,
+        user: 'orca',
+        bind: '127.0.0.1',
+        port: 6800,
+        logPath: '/var/log/orcad.log'
+      }),
+      platform: 'launchd',
+      scope: 'system'
+    }
+  }
+
+  it('decodes the escaped data root back to the path on disk', () => {
+    expect(readPinnedUserData(plist(hostile))).toBe('/Volumes/a&b/<orca>')
+  })
+
+  it('decodes ProgramArguments, which the doctor stats', () => {
+    expect(readExecTarget(plist(hostile))).toEqual({
+      interpreter: '/opt/n&de/bin/node',
+      script: '/opt/orc&d/orcad.js'
+    })
+  })
+
+  it('still reads the endpoint out of an escaped argument list', () => {
+    expect(readConfiguredEndpoint(plist(hostile))).toEqual({ bind: '127.0.0.1', port: 6800 })
+  })
+
+  // Decoding twice would turn a path that literally contains `&lt;` into one containing `<`
+  // — the same class of bug in the other direction.
+  it('decodes exactly one round, so an entity in the path survives as itself', () => {
+    expect(readPinnedUserData(plist({ ...hostile, userDataPath: '/srv/&lt;literal' }))).toBe(
+      '/srv/&lt;literal'
+    )
+  })
+})
+
 describe('the systemd command-line splitter', () => {
   it('splits on whitespace outside quotes', () => {
     expect(splitSystemdCommandLine('/bin/node /a/b.js --port 6800')).toEqual([

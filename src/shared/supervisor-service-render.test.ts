@@ -96,6 +96,17 @@ describe('run-as account', () => {
     )
   })
 
+  // systemd's `User=` takes a name or a numeric uid, so `0` is the same account as `root`
+  // spelled differently. A guard that only knows the name renders exactly the unit it exists
+  // to refuse.
+  it.each(['0', '00', ' 0 '])('refuses the numeric spelling of root (%j)', (user) => {
+    expect(() => renderSupervisorService(config({ user }))).toThrow(/root-owned data root/)
+  })
+
+  it('does not mistake an ordinary account with a digit for root', () => {
+    expect(renderSupervisorService(config({ user: 'orca0' }))).toContain('User=orca0')
+  })
+
   it('names the account explicitly', () => {
     expect(renderSupervisorService(config())).toContain('User=orca')
     expect(renderSupervisorService(config({ platform: 'launchd' }))).toContain(
@@ -121,6 +132,26 @@ describe('logging', () => {
     const unit = renderSupervisorService(config())
     expect(unit).toContain('StandardOutput=journal')
     expect(unit).not.toMatch(/StandardOutput=append:/)
+  })
+
+  // `/var/log` is root-owned on macOS. A LaunchAgent runs as the operator and cannot create
+  // a file there, and launchd reports that against the log path rather than the job — so the
+  // service reads as a broken install for a reason the plist never names. The renderer does
+  // no I/O, so it cannot resolve a home directory; naming nothing is the honest answer, and
+  // the caller supplies the scope-appropriate path.
+  it('never writes a log path into a plist the caller did not resolve', () => {
+    const plist = renderSupervisorService(config({ platform: 'launchd', scope: 'user' }))
+    expect(plist).not.toContain('/var/log/orcad.log')
+    expect(plist).not.toContain('StandardOutPath')
+  })
+
+  it('emits both stream keys once the caller names a path', () => {
+    const plist = renderSupervisorService(
+      config({ platform: 'launchd', logPath: '/Users/orca/Library/Logs/orcad.log' })
+    )
+    expect(plist).toContain('<key>StandardOutPath</key>')
+    expect(plist).toContain('<key>StandardErrorPath</key>')
+    expect(plist.match(/Library\/Logs\/orcad\.log/g)).toHaveLength(2)
   })
 })
 
