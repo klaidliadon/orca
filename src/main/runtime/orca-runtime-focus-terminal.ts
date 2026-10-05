@@ -8,9 +8,15 @@ import { copySleepingAgentLaunchConfig } from './runtime-agent-launch-resolution
 export class OrcaRuntimeWithFocusTerminal extends OrcaRuntimeWithWaitForLeafPtyId {
   async focusTerminal(
     handle: string,
-    options: { navigateHost?: boolean } = {}
+    options: { navigateHost?: boolean; requireLivePty?: boolean } = {}
   ): Promise<RuntimeTerminalFocus> {
     const navigateHost = options.navigateHost !== false
+    // Why: a PTY-less leaf is a slept or unspawned pane, and activating its worktree wakes it.
+    const assertLeafHasPty = (leaf: { ptyId: string | null }): void => {
+      if (options.requireLivePty && !leaf.ptyId) {
+        throw new Error('terminal_exited')
+      }
+    }
     const livePtyIdentity = (): RuntimeTerminalFocus => {
       const live = this.getLivePtyForHandle(handle)
       if (!live?.pty.connected) {
@@ -105,6 +111,7 @@ export class OrcaRuntimeWithFocusTerminal extends OrcaRuntimeWithWaitForLeafPtyI
     }
     this.assertGraphReady()
     const { leaf } = this.getLiveLeafForHandle(handle)
+    assertLeafHasPty(leaf)
     if (!navigateHost) {
       return {
         handle,
@@ -128,6 +135,7 @@ export class OrcaRuntimeWithFocusTerminal extends OrcaRuntimeWithWaitForLeafPtyI
       run: async (ctx) => {
         this.assertGraphReady()
         const { leaf: liveLeaf } = this.getLiveLeafForHandle(handle)
+        assertLeafHasPty(liveLeaf)
         if (!ctx.isCurrent()) {
           return {
             handle,
