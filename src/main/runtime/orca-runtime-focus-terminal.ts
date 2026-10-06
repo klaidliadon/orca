@@ -4,6 +4,7 @@ import type { RuntimeTerminalFocus } from '../../shared/runtime-types'
 import { parsePaneKey } from '../../shared/stable-pane-id'
 import { getLatestPtyTitle } from './runtime-worktree-status-projection'
 import { copySleepingAgentLaunchConfig } from './runtime-agent-launch-resolution'
+import { getRegisteredSshState } from '../ssh/ssh-target-registry'
 
 export class OrcaRuntimeWithFocusTerminal extends OrcaRuntimeWithWaitForLeafPtyId {
   async focusTerminal(
@@ -11,10 +12,25 @@ export class OrcaRuntimeWithFocusTerminal extends OrcaRuntimeWithWaitForLeafPtyI
     options: { navigateHost?: boolean; requireLivePty?: boolean } = {}
   ): Promise<RuntimeTerminalFocus> {
     const navigateHost = options.navigateHost !== false
-    // Why: a PTY-less leaf is a slept or unspawned pane, and activating its worktree wakes it.
-    const assertLeafHasPty = (leaf: { ptyId: string | null }): void => {
-      if (options.requireLivePty && !leaf.ptyId) {
+    // Why the provider and the SSH transport, not the record: a slept pane keeps its dead ptyId in
+    // the graph, a graph sync records it connected, and focusing it activates (wakes) the worktree.
+    const assertVerifiablyLivePty = (ptyId: string | null): void => {
+      if (!options.requireLivePty) {
+        return
+      }
+      const pty = ptyId ? this.ptysById.get(ptyId) : undefined
+      if (!pty?.connected) {
         throw new Error('terminal_exited')
+      }
+      if (pty.connectionId && getRegisteredSshState(pty.connectionId)?.status !== 'connected') {
+        throw new Error('terminal_unverifiable')
+      }
+      const live = this.ptyController?.hasPty?.(pty.ptyId) ?? null
+      if (live === false) {
+        throw new Error('terminal_exited')
+      }
+      if (live === null) {
+        throw new Error('terminal_unverifiable')
       }
     }
     const livePtyIdentity = (): RuntimeTerminalFocus => {
@@ -45,6 +61,7 @@ export class OrcaRuntimeWithFocusTerminal extends OrcaRuntimeWithWaitForLeafPtyI
       if (!pty.pty.connected) {
         throw new Error('terminal_exited')
       }
+      assertVerifiablyLivePty(pty.pty.ptyId)
       if (!navigateHost || !this.notifier?.revealTerminalSession) {
         return {
           handle,
@@ -63,6 +80,7 @@ export class OrcaRuntimeWithFocusTerminal extends OrcaRuntimeWithWaitForLeafPtyI
           if (!live?.pty.connected) {
             throw new Error('terminal_exited')
           }
+          assertVerifiablyLivePty(live.pty.ptyId)
           if (!ctx.isCurrent()) {
             return {
               handle,
@@ -111,7 +129,7 @@ export class OrcaRuntimeWithFocusTerminal extends OrcaRuntimeWithWaitForLeafPtyI
     }
     this.assertGraphReady()
     const { leaf } = this.getLiveLeafForHandle(handle)
-    assertLeafHasPty(leaf)
+    assertVerifiablyLivePty(leaf.ptyId)
     if (!navigateHost) {
       return {
         handle,
@@ -135,7 +153,7 @@ export class OrcaRuntimeWithFocusTerminal extends OrcaRuntimeWithWaitForLeafPtyI
       run: async (ctx) => {
         this.assertGraphReady()
         const { leaf: liveLeaf } = this.getLiveLeafForHandle(handle)
-        assertLeafHasPty(liveLeaf)
+        assertVerifiablyLivePty(liveLeaf.ptyId)
         if (!ctx.isCurrent()) {
           return {
             handle,

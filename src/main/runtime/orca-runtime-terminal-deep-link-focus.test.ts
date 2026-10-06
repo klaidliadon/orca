@@ -5,6 +5,7 @@ import { TEST_WORKTREE_ID, TEST_WORKTREE_PATH, store } from './orca-runtime-test
 import { deriveRemoteRuntimeTerminalCreateHandle } from './remote-runtime-terminal-create-identity'
 import { deterministicAgentSessionUuid } from './runtime-agent-launch-resolution'
 import { parseTerminalDeepLink } from '../../shared/terminal-deep-link'
+import { toAppSshPtyId } from '../../shared/ssh-pty-id'
 import { TerminalDeepLinkState } from '../startup/terminal-deep-link-state'
 
 const FOCUS_ONLY_NOTIFIER_METHODS = new Set(['focusTerminal', 'revealTerminalSession'])
@@ -36,8 +37,17 @@ function recordingNotifier(): {
   return { notifier: notifier as never, calls, revealTerminalSession, focusTerminal }
 }
 
-function ptyController(spawn = vi.fn().mockResolvedValue({ id: 'pty-bg' })) {
-  return { spawn, write: () => true, kill: () => true, getForegroundProcess: async () => null }
+function ptyController(
+  spawn = vi.fn().mockResolvedValue({ id: 'pty-bg' }),
+  livePtyIds: ReadonlySet<string> = new Set(['pty-bg'])
+) {
+  return {
+    spawn,
+    write: () => true,
+    kill: () => true,
+    getForegroundProcess: async () => null,
+    hasPty: (ptyId: string) => livePtyIds.has(ptyId)
+  }
 }
 
 function syncSingleLeaf(runtime: InstanceType<typeof OrcaRuntimeService>, ptyId: string | null) {
@@ -88,10 +98,13 @@ describe('orca://terminal deep link against the runtime', () => {
   it('focuses a live renderer leaf through the notifier focus path only', async () => {
     const runtime = new OrcaRuntimeService(store)
     const recorder = recordingNotifier()
+    runtime.setPtyController(ptyController(undefined, new Set(['pty-leaf'])))
     runtime.setNotifier(recorder.notifier)
     runtime.attachWindow(1)
     syncSingleLeaf(runtime, 'pty-leaf')
-    const [terminal] = (await runtime.listTerminals()).terminals
+    const terminal = (await runtime.listTerminals()).terminals.find(
+      (candidate) => candidate.tabId === 'tab-leaf'
+    )
     recorder.calls.length = 0
 
     await followLink(runtime, terminal!.handle)
@@ -119,6 +132,69 @@ describe('orca://terminal deep link against the runtime', () => {
     // The CLI focus path still selects the slept tab; only the deep link refuses it.
     await runtime.focusTerminal(terminal!.handle)
     expect(recorder.calls).toEqual(['focusTerminal'])
+    warn.mockRestore()
+  })
+
+  it.each([
+    ['provider has no such PTY', null, ptyController(), 'terminal_exited'],
+    ['PTY exited', 0, ptyController(), 'terminal_exited'],
+    ['no provider can answer', null, null, 'terminal_unverifiable']
+  ])(
+    'never focuses a slept pane that kept its dead ptyId (%s)',
+    async (_label, exitCode, controller, reason) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const runtime = new OrcaRuntimeService(store)
+      const recorder = recordingNotifier()
+      if (controller) {
+        runtime.setPtyController(controller)
+      }
+      runtime.setNotifier(recorder.notifier)
+      runtime.attachWindow(1)
+      syncSingleLeaf(runtime, 'pty-pre-sleep')
+      if (exitCode !== null) {
+        runtime.registerPty('pty-pre-sleep', TEST_WORKTREE_ID)
+        runtime.onPtyExit('pty-pre-sleep', exitCode)
+      }
+      const terminal = (await runtime.listTerminals()).terminals.find(
+        (candidate) => candidate.tabId === 'tab-leaf'
+      )
+      recorder.calls.length = 0
+
+      await followLink(runtime, terminal!.handle)
+
+      expect(recorder.calls).toEqual([])
+      expect(warn).toHaveBeenCalledWith(
+        `[deep-link] Ignored orca://terminal/${terminal!.handle}: "${reason}"`
+      )
+      // The CLI focus path still selects it; only the deep link refuses.
+      await runtime.focusTerminal(terminal!.handle)
+      expect(recorder.calls).toEqual(['focusTerminal'])
+      warn.mockRestore()
+    }
+  )
+
+  it('never focuses an SSH terminal whose transport is down, even if its record reads connected', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const ptyId = toAppSshPtyId('ssh-target', 'pty-1')
+    const runtime = new OrcaRuntimeService(store)
+    const recorder = recordingNotifier()
+    runtime.setPtyController(ptyController(undefined, new Set([ptyId])))
+    runtime.setNotifier(recorder.notifier)
+    runtime.attachWindow(1)
+    syncSingleLeaf(runtime, ptyId)
+    runtime.registerPty(ptyId, TEST_WORKTREE_ID, 'ssh-target')
+    const terminal = (await runtime.listTerminals()).terminals.find(
+      (candidate) => candidate.tabId === 'tab-leaf'
+    )
+    expect(terminal!.connected).toBe(true)
+    recorder.calls.length = 0
+
+    await followLink(runtime, terminal!.handle)
+
+    expect(recorder.calls).toEqual([])
+    expect(warn).toHaveBeenCalledWith(
+      `[deep-link] Ignored orca://terminal/${terminal!.handle}: "terminal_unverifiable"`
+    )
     warn.mockRestore()
   })
 
@@ -163,6 +239,7 @@ describe('orca://terminal deep link against the runtime', () => {
       TEST_WORKTREE_ID,
       expect.objectContaining({ ptyId: 'pty-bg' })
     )
+    expect(recorder.revealTerminalSession.mock.calls[0]![1]).not.toHaveProperty('command')
     expect(recorder.calls.every((name) => FOCUS_ONLY_NOTIFIER_METHODS.has(name))).toBe(true)
   })
 })
