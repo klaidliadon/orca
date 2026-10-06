@@ -39,14 +39,20 @@ function recordingNotifier(): {
 
 function ptyController(
   spawn = vi.fn().mockResolvedValue({ id: 'pty-bg' }),
-  livePtyIds: ReadonlySet<string> = new Set(['pty-bg'])
+  livePtyIds: ReadonlySet<string> = new Set(['pty-bg']),
+  providerStartup: Promise<void> = Promise.resolve()
 ) {
   return {
     spawn,
     write: () => true,
     kill: () => true,
     getForegroundProcess: async () => null,
-    hasPty: (ptyId: string) => livePtyIds.has(ptyId)
+    // Mirrors the desktop controller: the sync probe cannot answer before startup settles.
+    hasPty: () => null,
+    probePtyLiveness: async (ptyId: string) => {
+      await providerStartup
+      return livePtyIds.has(ptyId)
+    }
   }
 }
 
@@ -111,6 +117,32 @@ describe('orca://terminal deep link against the runtime', () => {
 
     expect(recorder.focusTerminal).toHaveBeenCalledWith('tab-leaf', TEST_WORKTREE_ID, 'pane:1')
     expect(recorder.calls).toEqual(['focusTerminal'])
+  })
+
+  it('focuses a live terminal on the first link after launch, once the PTY provider has started', async () => {
+    let finishStartup: (() => void) | undefined
+    const providerStartup = new Promise<void>((resolve) => {
+      finishStartup = resolve
+    })
+    const runtime = new OrcaRuntimeService(store)
+    const recorder = recordingNotifier()
+    runtime.setPtyController(ptyController(undefined, new Set(['pty-leaf']), providerStartup))
+    runtime.setNotifier(recorder.notifier)
+    runtime.attachWindow(1)
+    syncSingleLeaf(runtime, 'pty-leaf')
+    const terminal = (await runtime.listTerminals()).terminals.find(
+      (candidate) => candidate.tabId === 'tab-leaf'
+    )
+    recorder.calls.length = 0
+    const state = new TerminalDeepLinkState()
+
+    state.capture(['orca', `orca://terminal/${terminal!.handle}`], runtime)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(recorder.calls).toEqual([])
+    finishStartup!()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(recorder.focusTerminal).toHaveBeenCalledWith('tab-leaf', TEST_WORKTREE_ID, 'pane:1')
   })
 
   it('never focuses a slept pane, whose worktree activation would wake its agent', async () => {
